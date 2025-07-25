@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lux": {
+      "command": "/Users/alan/Projects/_MCP/nirvana/lux-mcp/target/release/lux-mcp",
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}
