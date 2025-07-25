@@ -49,6 +49,12 @@ impl MetacognitiveMonitor {
             quality_scores: VecDeque::with_capacity(5),
         }
     }
+    
+    pub fn reset_session(&mut self) {
+        self.thought_history.clear();
+        self.intervention_history.clear();
+        self.quality_scores.clear();
+    }
 
     pub fn analyze_thought(&mut self, thought: &str, thought_number: usize) -> MonitoringSignals {
         // Add to history

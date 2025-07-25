@@ -173,6 +173,12 @@ impl BiasedReasoningTool {
     }
     
     pub async fn biased_reasoning(&self, request: BiasedReasoningRequest) -> Result<BiasedReasoningResponse> {
+        // Reset monitor for new session
+        {
+            let mut monitor = self.monitor.lock().unwrap();
+            monitor.reset_session();
+        }
+        
         // Resolve models
         let primary_model = request.primary_model
             .as_ref()

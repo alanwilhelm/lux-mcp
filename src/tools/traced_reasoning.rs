@@ -193,6 +193,12 @@ impl TracedReasoningTool {
     }
     
     pub async fn trace_reasoning(&self, request: TracedReasoningRequest) -> Result<TracedReasoningResponse> {
+        // Reset monitor for new session
+        {
+            let mut monitor = self.monitor.lock().unwrap();
+            monitor.reset_session();
+        }
+        
         let model = request.model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
@@ -244,7 +250,31 @@ impl TracedReasoningTool {
             
             let confidence = self.calculate_step_confidence(&step_metrics);
             
-            // Check for interventions
+            // Check monitor for interventions
+            {
+                let mut monitor = self.monitor.lock().unwrap();
+                let thought_number = step_count as usize;
+                let signals = monitor.analyze_thought(&thought, thought_number);
+                
+                if let Some(intervention_msg) = signals.intervention {
+                    let intervention_type = if signals.circular_score > 0.85 {
+                        InterventionType::CircularReasoning
+                    } else if signals.distractor_alert {
+                        InterventionType::SemanticDrift
+                    } else {
+                        InterventionType::InconsistentLogic
+                    };
+                    
+                    interventions.push(Intervention {
+                        step: step_count,
+                        intervention_type,
+                        description: intervention_msg,
+                        severity: Severity::Medium,
+                    });
+                }
+            }
+            
+            // Check for additional interventions
             if let Some(intervention) = self.check_interventions(
                 step_count,
                 &step_metrics,
@@ -370,23 +400,28 @@ impl TracedReasoningTool {
         previous_steps: &[ReasoningStep],
         _guardrails: &GuardrailConfig,
     ) -> Result<StepMetrics> {
-        // Simulate metric calculations
-        // In production, these would use embeddings, language models, etc.
+        // Use real monitor to analyze the thought
+        let mut monitor = self.monitor.lock().unwrap();
+        let thought_number = previous_steps.len() + 1;
+        let signals = monitor.analyze_thought(thought, thought_number);
         
-        let semantic_similarity = if previous_steps.is_empty() {
-            Some(1.0)
-        } else {
-            Some(0.85 - (previous_steps.len() as f32 * 0.02))
-        };
+        // Map MonitoringSignals to StepMetrics
+        // circular_score of 0 means no circular reasoning (good), 1 means high circular (bad)
+        // So semantic_similarity should be 1.0 - circular_score
+        let semantic_similarity = Some((1.0 - signals.circular_score) as f32);
         
+        // Monitor doesn't calculate perplexity yet, keep placeholder
         let perplexity = Some(20.0 + (thought.len() as f32 / 100.0));
         
+        // Monitor doesn't calculate attention entropy yet
         let attention_entropy = Some(0.7);
         
-        let consistency_score = if previous_steps.len() > 1 {
-            Some(0.9)
-        } else {
-            Some(1.0)
+        // Use quality trend to estimate consistency
+        let consistency_score = match signals.quality_trend.as_str() {
+            "improving" => Some(1.0),
+            "stable" => Some(0.9),
+            "degrading" => Some(0.7),
+            _ => Some(0.8),
         };
         
         Ok(StepMetrics {
