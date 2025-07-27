@@ -28,15 +28,19 @@ impl LLMConfig {
         dotenv::dotenv().ok();
         
         Ok(Self {
-            // API Keys
-            openai_api_key: env::var("OPENAI_API_KEY").ok(),
-            openrouter_api_key: env::var("OPENROUTER_API_KEY").ok(),
+            // API Keys (filter out empty strings)
+            openai_api_key: env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            openrouter_api_key: env::var("OPENROUTER_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
             
             // Default models
             default_chat_model: env::var("LUX_DEFAULT_CHAT_MODEL")
                 .unwrap_or_else(|_| "gpt-4-turbo-preview".to_string()),
             default_reasoning_model: env::var("LUX_DEFAULT_REASONING_MODEL")
-                .unwrap_or_else(|_| "o3".to_string()),
+                .unwrap_or_else(|_| "o3-pro".to_string()),
             default_bias_checker_model: env::var("LUX_DEFAULT_BIAS_CHECKER_MODEL")
                 .unwrap_or_else(|_| "o4-mini".to_string()),
             
@@ -72,8 +76,8 @@ impl Default for LLMConfig {
         Self {
             openai_api_key: None,
             openrouter_api_key: None,
-            default_chat_model: "gpt-4-turbo-preview".to_string(),
-            default_reasoning_model: "o3".to_string(), 
+            default_chat_model: "gpt4.1".to_string(),
+            default_reasoning_model: "o3-pro".to_string(), 
             default_bias_checker_model: "o4-mini".to_string(),
             openai_base_url: None,
             openrouter_base_url: Some("https://openrouter.ai/api/v1".to_string()),

@@ -67,7 +67,7 @@ pub struct OpenRouterClient {
 impl OpenRouterClient {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))  // 5 minute timeout to match OpenAI client
             .build()
             .context("Failed to build HTTP client")?;
         

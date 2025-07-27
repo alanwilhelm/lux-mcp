@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
-use tracing::{debug, info};
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, info, error};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -11,7 +12,7 @@ use crate::llm::{
     openrouter::OpenRouterClient,
     Role,
 };
-use crate::monitoring::MetacognitiveMonitor;
+use crate::session::SessionManager;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BiasedReasoningRequest {
@@ -26,6 +27,8 @@ pub struct BiasedReasoningRequest {
     pub temperature: f32,
     #[serde(default)]
     pub bias_config: BiasCheckConfig,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 fn default_max_steps() -> u32 { 10 }
@@ -67,6 +70,27 @@ pub struct BiasedReasoningResponse {
     pub overall_assessment: OverallAssessment,
     pub primary_model_used: String,
     pub verifier_model_used: String,
+    pub detailed_process_log: Vec<ProcessLogEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProcessLogEntry {
+    pub action_type: ProcessActionType,
+    pub step_number: u32,
+    pub timestamp: String,
+    pub model_used: String,
+    pub content: String,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessActionType {
+    PrimaryReasoning,
+    BiasChecking,
+    CorrectionGeneration,
+    QualityAssessment,
+    FinalAnswerGeneration,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -121,7 +145,7 @@ pub struct OverallAssessment {
 }
 
 pub struct BiasedReasoningTool {
-    monitor: Arc<Mutex<MetacognitiveMonitor>>,
+    session_manager: Arc<SessionManager>,
     openai_client: Option<Arc<dyn LLMClient>>,
     openrouter_clients: Vec<(String, Arc<dyn LLMClient>)>,
     model_resolver: ModelResolver,
@@ -129,7 +153,7 @@ pub struct BiasedReasoningTool {
 }
 
 impl BiasedReasoningTool {
-    pub fn new(config: LLMConfig, monitor: Arc<Mutex<MetacognitiveMonitor>>) -> Result<Self> {
+    pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
         let model_resolver = ModelResolver::new();
         
         let openai_client = if let Some(api_key) = &config.openai_api_key {
@@ -164,7 +188,7 @@ impl BiasedReasoningTool {
         }
         
         Ok(Self {
-            monitor,
+            session_manager,
             openai_client,
             openrouter_clients,
             model_resolver,
@@ -173,10 +197,16 @@ impl BiasedReasoningTool {
     }
     
     pub async fn biased_reasoning(&self, request: BiasedReasoningRequest) -> Result<BiasedReasoningResponse> {
-        // Reset monitor for new session
+        use chrono::Utc;
+        
+        // Get or create session
+        let session_id = self.session_manager.get_or_create_session(request.session_id);
+        let monitor = self.session_manager.get_monitor(&session_id)?;
+        
+        // Reset monitor for new request
         {
-            let mut monitor = self.monitor.lock().unwrap();
-            monitor.reset_session();
+            let mut monitor_guard = monitor.lock();
+            monitor_guard.reset_session();
         }
         
         // Resolve models
@@ -192,11 +222,18 @@ impl BiasedReasoningTool {
         
         info!("Starting biased reasoning with primary: '{}', verifier: '{}'", primary_model, verifier_model);
         
+        // Warn about o3 model usage
+        if primary_model.starts_with("o3") || verifier_model.starts_with("o3") {
+            info!("⏳ Using o3 models - expect longer processing times (30s-5min per step)");
+            info!("💭 Deep reasoning in progress. This is normal and expected...");
+        }
+        
         // Get clients
         let primary_client = self.get_client_for_model(&primary_model)?;
         let verifier_client = self.get_client_for_model(&verifier_model)?;
         
         let mut reasoning_steps = Vec::new();
+        let mut detailed_process_log = Vec::new();
         let mut primary_conversation = vec![
             ChatMessage {
                 role: Role::System,
@@ -219,25 +256,64 @@ impl BiasedReasoningTool {
             step_count += 1;
             
             // Get primary model's reasoning step
+            info!("🔄 Step {}: Generating reasoning with {}", step_count, primary_model);
+            let primary_start = Instant::now();
+            // Use maximum tokens for all models to ensure no truncation
+            let primary_max_tokens = 10000;
+            
             let primary_response = primary_client
                 .complete(
                     primary_conversation.clone(),
                     Some(request.temperature),
-                    Some(1500),
+                    Some(primary_max_tokens),
                 )
                 .await
                 .context("Failed to get primary reasoning step")?;
+            let primary_duration = primary_start.elapsed();
+            info!("✅ {} completed step {} in {:?}", primary_model, step_count, primary_duration);
             
             let primary_thought = primary_response.content.clone();
             
+            // Log primary reasoning
+            detailed_process_log.push(ProcessLogEntry {
+                action_type: ProcessActionType::PrimaryReasoning,
+                step_number: step_count,
+                timestamp: Utc::now().to_rfc3339(),
+                model_used: primary_model.clone(),
+                content: format!("Generated reasoning step:\n{}", primary_thought),
+                duration_ms: Some(primary_duration.as_millis() as u64),
+            });
+            
             // Check for bias using verifier model
+            info!("🔍 Step {}: Checking for bias with {}", step_count, verifier_model);
+            let bias_start = Instant::now();
             let bias_check = self.check_step_for_bias(
                 &primary_thought,
                 &request.query,
                 step_count,
                 &verifier_client,
                 &request.bias_config,
+                &verifier_model,
             ).await?;
+            let bias_duration = bias_start.elapsed();
+            info!("✅ Bias check completed in {:?}", bias_duration);
+            
+            // Log bias checking
+            detailed_process_log.push(ProcessLogEntry {
+                action_type: ProcessActionType::BiasChecking,
+                step_number: step_count,
+                timestamp: Utc::now().to_rfc3339(),
+                model_used: verifier_model.clone(),
+                content: format!(
+                    "Bias check results:\n- Has bias: {}\n- Bias types: {:?}\n- Severity: {:?}\n- Explanation: {}\n- Suggestions: {}",
+                    bias_check.has_bias,
+                    bias_check.bias_types,
+                    bias_check.severity,
+                    bias_check.explanation,
+                    bias_check.suggestions.join(", ")
+                ),
+                duration_ms: Some(bias_duration.as_millis() as u64),
+            });
             
             // Track bias types
             for bias_type in &bias_check.bias_types {
@@ -246,16 +322,40 @@ impl BiasedReasoningTool {
             
             // Generate corrected thought if needed
             let corrected_thought = if bias_check.has_bias && bias_check.severity as u8 >= Severity::Medium as u8 {
-                Some(self.generate_corrected_thought(
+                let correction_start = Instant::now();
+                let corrected = self.generate_corrected_thought(
                     &primary_thought,
                     &bias_check,
                     &verifier_client,
-                ).await?)
+                ).await?;
+                let correction_duration = correction_start.elapsed();
+                
+                // Log correction generation
+                detailed_process_log.push(ProcessLogEntry {
+                    action_type: ProcessActionType::CorrectionGeneration,
+                    step_number: step_count,
+                    timestamp: Utc::now().to_rfc3339(),
+                    model_used: verifier_model.clone(),
+                    content: format!("Generated corrected thought:\n{}", corrected),
+                    duration_ms: Some(correction_duration.as_millis() as u64),
+                });
+                
+                Some(corrected)
             } else {
                 None
             };
             
             let step_quality = self.calculate_step_quality(&bias_check);
+            
+            // Log quality assessment
+            detailed_process_log.push(ProcessLogEntry {
+                action_type: ProcessActionType::QualityAssessment,
+                step_number: step_count,
+                timestamp: Utc::now().to_rfc3339(),
+                model_used: "internal".to_string(),
+                content: format!("Step quality score: {:.2}", step_quality),
+                duration_ms: None,
+            });
             
             reasoning_steps.push(VerifiedReasoningStep {
                 step_number: step_count,
@@ -292,11 +392,26 @@ impl BiasedReasoningTool {
                 content: "Based on your reasoning, provide a final answer.".to_string(),
             });
             
+            let final_start = Instant::now();
+            // Use maximum tokens for all models to ensure no truncation
+            let final_max_tokens = 10000;
+            
             let final_response = primary_client
-                .complete(primary_conversation, Some(request.temperature), Some(1000))
+                .complete(primary_conversation, Some(request.temperature), Some(final_max_tokens))
                 .await?;
+            let final_duration = final_start.elapsed();
                 
             final_answer = final_response.content;
+            
+            // Log final answer generation
+            detailed_process_log.push(ProcessLogEntry {
+                action_type: ProcessActionType::FinalAnswerGeneration,
+                step_number: step_count + 1,
+                timestamp: Utc::now().to_rfc3339(),
+                model_used: primary_model.clone(),
+                content: format!("Generated final answer:\n{}", final_answer),
+                duration_ms: Some(final_duration.as_millis() as u64),
+            });
         }
         
         // Calculate overall assessment
@@ -308,6 +423,7 @@ impl BiasedReasoningTool {
             overall_assessment,
             primary_model_used: primary_model,
             verifier_model_used: verifier_model,
+            detailed_process_log,
         })
     }
     
@@ -318,6 +434,7 @@ impl BiasedReasoningTool {
         step_number: u32,
         verifier_client: &Arc<dyn LLMClient>,
         config: &BiasCheckConfig,
+        verifier_model_name: &str,
     ) -> Result<BiasCheckResult> {
         let mut check_prompt = format!(
             "Analyze the following reasoning step for biases and errors:\n\n\
@@ -358,10 +475,23 @@ impl BiasedReasoningTool {
             },
         ];
         
+        // Use maximum tokens for all models to ensure no truncation
+        let max_tokens = 10000;
+        
+        // o4 models only support default temperature (1.0)
+        let temperature = if verifier_model_name.starts_with("o4") {
+            None  // Use default temperature for o4 models
+        } else {
+            Some(0.3)  // Use lower temperature for other models for consistency
+        };
+        
         let response = verifier_client
-            .complete(messages, Some(0.3), Some(500))
+            .complete(messages, temperature, Some(max_tokens))
             .await
-            .context("Failed to check for bias")?;
+            .map_err(|e| {
+                error!("Verifier model '{}' failed during bias check: {}", verifier_model_name, e);
+                anyhow::anyhow!("Failed to check for bias with model '{}': {}", verifier_model_name, e)
+            })?;
         
         // Parse the response into structured format
         self.parse_bias_check_response(&response.content)
@@ -452,8 +582,19 @@ impl BiasedReasoningTool {
             },
         ];
         
+        // Use maximum tokens for all models to ensure no truncation
+        let verifier_model = verifier_client.get_model_name();
+        let max_tokens = 10000;
+        
+        // o4 models only support default temperature (1.0)
+        let temperature = if verifier_model.starts_with("o4") {
+            None  // Use default temperature for o4 models
+        } else {
+            Some(0.5)  // Use moderate temperature for corrections
+        };
+        
         let response = verifier_client
-            .complete(messages, Some(0.5), Some(500))
+            .complete(messages, temperature, Some(max_tokens))
             .await
             .context("Failed to generate corrected thought")?;
         
@@ -541,7 +682,8 @@ impl BiasedReasoningTool {
                 .find(|(m, _)| m == model) {
                 Ok(client.clone())
             } else {
-                let api_key = self.config.openrouter_api_key.as_ref().unwrap();
+                let api_key = self.config.openrouter_api_key.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not available"))?;
                 let new_client = OpenRouterClient::new(
                     api_key.clone(),
                     model.to_string(),

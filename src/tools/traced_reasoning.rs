@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
-use tracing::debug;
+use std::sync::Arc;
+use tracing::{debug, info, error, warn};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -11,22 +11,36 @@ use crate::llm::{
     openrouter::OpenRouterClient,
     Role,
 };
-use crate::monitoring::MetacognitiveMonitor;
+use crate::session::SessionManager;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TracedReasoningRequest {
-    pub query: String,
+    pub thought: String,  // For thought 1: the query, for 2+: guidance/previous thought
+    pub thought_number: u32,
+    pub total_thoughts: u32,
+    pub next_thought_needed: bool,
+    
+    #[serde(default)]
+    pub is_revision: bool,
+    #[serde(default)]
+    pub revises_thought: Option<u32>,
+    #[serde(default)]
+    pub branch_from_thought: Option<u32>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    #[serde(default)]
+    pub needs_more_thoughts: bool,
+    
+    #[serde(default)]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default = "default_max_steps")]
-    pub max_steps: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
     #[serde(default)]
     pub guardrails: GuardrailConfig,
 }
 
-fn default_max_steps() -> u32 { 10 }
 fn default_temperature() -> f32 { 0.7 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,12 +81,41 @@ impl Default for GuardrailConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TracedReasoningResponse {
-    pub final_answer: String,
-    pub reasoning_steps: Vec<ReasoningStep>,
-    pub metrics: ReasoningMetrics,
-    pub interventions: Vec<Intervention>,
-    pub confidence_score: f32,
-    pub model_used: String,
+    pub status: String,  // "thinking", "intervention_needed", "conclusion_reached"
+    pub thought_number: u32,
+    pub total_thoughts: u32,
+    pub next_thought_needed: bool,
+    pub thought_content: String,
+    pub thought_type: StepType,
+    pub metrics: StepMetrics,
+    pub metadata: TracedReasoningMetadata,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_steps: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intervention: Option<Intervention>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overall_metrics: Option<ReasoningMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_used: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TracedReasoningMetadata {
+    pub thought_history_length: u32,
+    pub interventions_count: u32,
+    pub semantic_coherence: f32,
+    pub current_confidence: f32,
+    pub is_revision: bool,
+    pub revises_thought: Option<u32>,
+    pub branch_id: Option<String>,
+    pub needs_more_thoughts: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -84,7 +127,7 @@ pub struct ReasoningStep {
     pub metrics: StepMetrics,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum StepType {
     Initial,
@@ -112,7 +155,7 @@ pub struct ReasoningMetrics {
     pub path_consensus: Option<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Intervention {
     pub step: u32,
     pub intervention_type: InterventionType,
@@ -120,7 +163,7 @@ pub struct Intervention {
     pub severity: Severity,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum InterventionType {
     SemanticDrift,
@@ -131,7 +174,7 @@ pub enum InterventionType {
     HallucinationRisk,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Low,
@@ -140,16 +183,32 @@ pub enum Severity {
     Critical,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThoughtData {
+    pub thought_number: u32,
+    pub content: String,
+    pub thought_type: StepType,
+    pub metrics: StepMetrics,
+    pub confidence: f32,
+    pub is_revision: bool,
+    pub revises_thought: Option<u32>,
+    pub branch_id: Option<String>,
+}
+
 pub struct TracedReasoningTool {
-    monitor: Arc<Mutex<MetacognitiveMonitor>>,
+    session_manager: Arc<SessionManager>,
     openai_client: Option<Arc<dyn LLMClient>>,
     openrouter_clients: Vec<(String, Arc<dyn LLMClient>)>,
     model_resolver: ModelResolver,
     config: LLMConfig,
+    thought_history: Vec<ThoughtData>,
+    interventions: Vec<Intervention>,
+    branches: std::collections::HashMap<String, Vec<ThoughtData>>,
+    original_query: Option<String>,
 }
 
 impl TracedReasoningTool {
-    pub fn new(config: LLMConfig, monitor: Arc<Mutex<MetacognitiveMonitor>>) -> Result<Self> {
+    pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
         let model_resolver = ModelResolver::new();
         
         let openai_client = if let Some(api_key) = &config.openai_api_key {
@@ -184,168 +243,398 @@ impl TracedReasoningTool {
         }
         
         Ok(Self {
-            monitor,
+            session_manager,
             openai_client,
             openrouter_clients,
             model_resolver,
             config,
+            thought_history: Vec::new(),
+            interventions: Vec::new(),
+            branches: std::collections::HashMap::new(),
+            original_query: None,
         })
     }
     
-    pub async fn trace_reasoning(&self, request: TracedReasoningRequest) -> Result<TracedReasoningResponse> {
-        // Reset monitor for new session
-        {
-            let mut monitor = self.monitor.lock().unwrap();
-            monitor.reset_session();
+    pub async fn process_thought(&mut self, request: TracedReasoningRequest) -> Result<TracedReasoningResponse> {
+        let session_id = self.session_manager.get_or_create_session(request.session_id.clone());
+        let monitor = self.session_manager.get_monitor(&session_id)?;
+        
+        // Validate thought number
+        if request.thought_number < 1 {
+            anyhow::bail!("thought_number must be at least 1");
         }
         
+        if request.total_thoughts < 1 {
+            anyhow::bail!("total_thoughts must be at least 1");
+        }
+        
+        // Get model for reasoning
         let model = request.model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
             .unwrap_or_else(|| self.config.default_reasoning_model.clone());
         
-        debug!("Starting traced reasoning with model '{}'", model);
+        info!("Processing thought {} with model '{}'", request.thought_number, model);
         
-        let client = self.get_client_for_model(&model)?;
+        // Warn about o3 model usage
+        if model.starts_with("o3") {
+            info!("⏳ Using {} for deep reasoning - this may take 30 seconds to 5 minutes", model);
+            info!("💭 Metacognitive reasoning in progress...");
+        }
         
-        let mut reasoning_steps = Vec::new();
-        let mut interventions = Vec::new();
-        let mut conversation_history = vec![
-            ChatMessage {
-                role: Role::System,
-                content: self.build_system_prompt(&request.guardrails),
-            },
-            ChatMessage {
-                role: Role::User,
-                content: format!(
-                    "Query: {}\n\nPlease reason through this step-by-step, showing your thinking process clearly.",
-                    request.query
-                ),
-            },
-        ];
+        // For first thought, store the original query
+        if request.thought_number == 1 {
+            self.original_query = Some(request.thought.clone());
+            // Reset state for new reasoning session
+            self.thought_history.clear();
+            self.interventions.clear();
+            self.branches.clear();
+            
+            // Reset monitor
+            let mut monitor_guard = monitor.lock();
+            monitor_guard.reset_session();
+        }
         
-        let mut step_count = 0;
-        let mut final_answer = String::new();
-        
-        while step_count < request.max_steps {
-            step_count += 1;
+        // Generate thought content using LLM
+        let (generated_content, thought_type) = if request.thought_number == 1 {
+            // For first thought, acknowledge the query and begin exploration
+            let initial_response = format!(
+                "Beginning analysis of: {}\n\nLet me explore this step by step.",
+                request.thought
+            );
+            (initial_response, StepType::Initial)
+        } else {
+            // Build context from previous thoughts
+            let context = self.build_reasoning_context(&request);
+            
+            // Create prompt for LLM
+            let system_prompt = self.build_system_prompt(&request.guardrails);
+            let user_prompt = self.build_user_prompt(&request, &context);
+            
+            // Call LLM to generate thought content
+            let client = self.get_client_for_model(&model)
+                .context("Failed to get LLM client")?;
+            
+            let messages = vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: system_prompt,
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: user_prompt,
+                },
+            ];
+            
+            info!("🚀 Sending thought {} to LLM for reasoning", request.thought_number);
+            let start_time = std::time::Instant::now();
             
             let response = client
-                .complete(
-                    conversation_history.clone(),
-                    Some(request.temperature),
-                    Some(2000),
-                )
+                .complete(messages, Some(request.temperature), Some(2000))
                 .await
-                .context("Failed to get reasoning step")?;
+                .map_err(|e| {
+                    let elapsed = start_time.elapsed();
+                    error!("LLM call failed after {:?}: {}", elapsed, e);
+                    anyhow::anyhow!("Failed to generate reasoning thought after {:?}: {}", elapsed, e)
+                })?;
             
-            let (step_type, thought, is_final) = self.parse_step_response(&response.content);
+            let elapsed = start_time.elapsed();
+            info!("✅ Thought {} generated in {:?}", request.thought_number, elapsed);
             
-            let step_metrics = self.calculate_step_metrics(
-                &thought,
-                &request.query,
-                &reasoning_steps,
-                &request.guardrails,
-            ).await?;
+            let (step_type, _, _) = self.parse_step_response(&response.content);
+            (response.content, step_type)
+        };
+        
+        // Calculate metrics for this thought
+        let step_metrics = self.calculate_step_metrics(
+            &generated_content,
+            self.original_query.as_ref().unwrap_or(&"".to_string()),
+            &self.thought_history,
+            &request.guardrails,
+            monitor.clone(),
+        ).await?;
+        
+        let confidence = self.calculate_step_confidence(&step_metrics);
+        
+        // Check for interventions
+        let intervention = self.check_thought_interventions(
+            request.thought_number,
+            &step_metrics,
+            &generated_content,
+            &request.guardrails,
+            monitor.clone(),
+        );
+        
+        if let Some(ref interv) = intervention {
+            self.interventions.push(interv.clone());
+        }
+        
+        // Store thought data
+        let thought_data = ThoughtData {
+            thought_number: request.thought_number,
+            content: generated_content.clone(),
+            thought_type: thought_type.clone(),
+            metrics: step_metrics.clone(),
+            confidence,
+            is_revision: request.is_revision,
+            revises_thought: request.revises_thought,
+            branch_id: request.branch_id.clone(),
+        };
+        
+        // Handle branching
+        if request.branch_from_thought.is_some() && request.branch_id.is_some() {
+            let branch_id = request.branch_id.as_ref().unwrap();
+            self.branches.entry(branch_id.clone())
+                .or_insert_with(Vec::new)
+                .push(thought_data.clone());
+        }
+        
+        // Add to main history (revisions replace the original thought)
+        if request.is_revision && request.revises_thought.is_some() {
+            let revises_idx = request.revises_thought.unwrap() as usize - 1;
+            if revises_idx < self.thought_history.len() {
+                self.thought_history[revises_idx] = thought_data;
+            }
+        } else {
+            self.thought_history.push(thought_data);
+        }
+        
+        // Build response
+        let mut response = self.build_reasoning_response(&request, generated_content, thought_type.clone(), step_metrics, confidence, &model);
+        
+        // Set intervention if needed
+        response.intervention = intervention;
+        
+        // Check if we've reached a conclusion
+        let is_conclusion = thought_type == StepType::Conclusion || 
+                           response.thought_content.to_lowercase().contains("final answer") ||
+                           response.thought_content.to_lowercase().contains("conclusion");
+        
+        // Handle reasoning completion
+        if !request.next_thought_needed || is_conclusion {
+            response.reasoning_complete = Some(true);
+            response.final_answer = Some(self.extract_final_answer(&response.thought_content));
+            response.overall_metrics = Some(self.calculate_overall_metrics(&self.thought_history));
+            response.next_steps = Some(
+                "Reasoning complete. Present the final answer and reasoning chain to the user with:\n\
+                1. Clear conclusion based on the reasoning\n\
+                2. Summary of key insights from each thought\n\
+                3. Confidence assessment\n\
+                4. Any caveats or limitations identified".to_string()
+            );
+        }
+        
+        Ok(response)
+    }
+    
+    fn build_reasoning_context(&self, request: &TracedReasoningRequest) -> String {
+        let mut context = String::new();
+        
+        // Add original query
+        if let Some(ref query) = self.original_query {
+            context.push_str(&format!("Original Query: {}\n\n", query));
+        }
+        
+        // Add previous thoughts
+        context.push_str("Previous reasoning thoughts:\n");
+        for thought in &self.thought_history {
+            context.push_str(&format!(
+                "Thought {}: [Type: {:?}, Confidence: {:.2}]\n{}\n\n",
+                thought.thought_number,
+                thought.thought_type,
+                thought.confidence,
+                thought.content
+            ));
+        }
+        
+        // Add intervention history if any
+        if !self.interventions.is_empty() {
+            context.push_str("\nInterventions triggered:\n");
+            for intervention in &self.interventions {
+                context.push_str(&format!(
+                    "- Thought {}: {:?} - {}\n",
+                    intervention.step,
+                    intervention.intervention_type,
+                    intervention.description
+                ));
+            }
+        }
+        
+        // Add branch information if relevant
+        if request.branch_from_thought.is_some() {
+            context.push_str("\nThis is a branch exploring an alternative reasoning path.\n");
+        }
+        
+        // Add revision context if relevant
+        if request.is_revision && request.revises_thought.is_some() {
+            let revises_num = request.revises_thought.unwrap();
+            context.push_str(&format!("\nThis thought revises thought {} based on new insights.\n", revises_num));
+        }
+        
+        context
+    }
+    
+    fn build_user_prompt(&self, request: &TracedReasoningRequest, context: &str) -> String {
+        let thought_type = if request.thought_number <= 2 {
+            "exploration"
+        } else if request.thought_number > request.total_thoughts - 2 {
+            "synthesis/conclusion"
+        } else {
+            "analysis"
+        };
+        
+        format!(
+            "{}Current thought number: {} of {}\n\
+            Generate the next {} thought in this reasoning process.\n\
+            User guidance: {}\n\n\
+            Provide a clear reasoning thought that:\n\
+            1. Builds on previous insights\n\
+            2. Adds new analysis or perspective\n\
+            3. Moves toward answering the original query\n\
+            4. Maintains logical consistency\n\n\
+            Format: Step {}: [Type: exploration/analysis/synthesis/validation/conclusion]\n\
+            [Your detailed reasoning for this step]",
+            context,
+            request.thought_number,
+            request.total_thoughts,
+            thought_type,
+            request.thought,
+            request.thought_number
+        )
+    }
+    
+    fn check_thought_interventions(
+        &self,
+        thought_number: u32,
+        metrics: &StepMetrics,
+        thought_content: &str,
+        guardrails: &GuardrailConfig,
+        monitor: Arc<parking_lot::Mutex<crate::monitoring::MetacognitiveMonitor>>,
+    ) -> Option<Intervention> {
+        // Check monitor signals
+        {
+            let mut monitor_guard = monitor.lock();
+            let signals = monitor_guard.analyze_thought(thought_content, thought_number as usize);
             
-            let confidence = self.calculate_step_confidence(&step_metrics);
-            
-            // Check monitor for interventions
-            {
-                let mut monitor = self.monitor.lock().unwrap();
-                let thought_number = step_count as usize;
-                let signals = monitor.analyze_thought(&thought, thought_number);
+            if let Some(intervention_msg) = signals.intervention {
+                let intervention_type = if signals.circular_score > 0.85 {
+                    InterventionType::CircularReasoning
+                } else if signals.distractor_alert {
+                    InterventionType::SemanticDrift
+                } else {
+                    InterventionType::InconsistentLogic
+                };
                 
-                if let Some(intervention_msg) = signals.intervention {
-                    let intervention_type = if signals.circular_score > 0.85 {
-                        InterventionType::CircularReasoning
-                    } else if signals.distractor_alert {
-                        InterventionType::SemanticDrift
-                    } else {
-                        InterventionType::InconsistentLogic
-                    };
-                    
-                    interventions.push(Intervention {
-                        step: step_count,
-                        intervention_type,
-                        description: intervention_msg,
+                return Some(Intervention {
+                    step: thought_number,
+                    intervention_type,
+                    description: intervention_msg,
+                    severity: Severity::Medium,
+                });
+            }
+        }
+        
+        // Semantic drift check
+        if guardrails.semantic_drift_check {
+            if let Some(similarity) = metrics.semantic_similarity {
+                if similarity < guardrails.semantic_drift_threshold {
+                    return Some(Intervention {
+                        step: thought_number,
+                        intervention_type: InterventionType::SemanticDrift,
+                        description: format!(
+                            "Reasoning drifting from original query (similarity: {:.2})",
+                            similarity
+                        ),
+                        severity: if similarity < 0.2 { Severity::High } else { Severity::Medium },
+                    });
+                }
+            }
+        }
+        
+        // Perplexity check
+        if guardrails.perplexity_monitoring {
+            if let Some(perplexity) = metrics.perplexity {
+                if perplexity > guardrails.perplexity_threshold {
+                    return Some(Intervention {
+                        step: thought_number,
+                        intervention_type: InterventionType::HighPerplexity,
+                        description: format!("High perplexity detected: {:.1}", perplexity),
+                        severity: if perplexity > 80.0 { Severity::High } else { Severity::Medium },
+                    });
+                }
+            }
+        }
+        
+        // Circular reasoning check
+        if guardrails.circular_reasoning_detection && self.thought_history.len() > 2 {
+            for prev_thought in self.thought_history.iter().rev().take(3) {
+                if self.text_similarity(thought_content, &prev_thought.content) > 0.85 {
+                    return Some(Intervention {
+                        step: thought_number,
+                        intervention_type: InterventionType::CircularReasoning,
+                        description: "Potential circular reasoning detected".to_string(),
                         severity: Severity::Medium,
                     });
                 }
             }
-            
-            // Check for additional interventions
-            if let Some(intervention) = self.check_interventions(
-                step_count,
-                &step_metrics,
-                &thought,
-                &reasoning_steps,
-                &request.guardrails,
-            ) {
-                interventions.push(intervention);
-                
-                // Add corrective prompt if needed
-                if step_metrics.semantic_similarity.unwrap_or(1.0) < request.guardrails.semantic_drift_threshold {
-                    conversation_history.push(ChatMessage {
-                        role: Role::System,
-                        content: "Please refocus on the original query and ensure your reasoning stays relevant.".to_string(),
-                    });
-                }
-            }
-            
-            let reasoning_step = ReasoningStep {
-                step_number: step_count,
-                thought: thought.clone(),
-                step_type,
-                confidence,
-                metrics: step_metrics,
-            };
-            
-            reasoning_steps.push(reasoning_step);
-            
-            conversation_history.push(ChatMessage {
-                role: Role::Assistant,
-                content: response.content.clone(),
-            });
-            
-            if is_final {
-                final_answer = self.extract_final_answer(&response.content);
-                break;
-            }
-            
-            // Add continuation prompt
-            conversation_history.push(ChatMessage {
-                role: Role::User,
-                content: "Continue your reasoning to the next step.".to_string(),
-            });
         }
         
-        // If we haven't reached a conclusion, request one
-        if final_answer.is_empty() && step_count >= request.max_steps {
-            conversation_history.push(ChatMessage {
-                role: Role::User,
-                content: "Based on your reasoning so far, please provide a final answer.".to_string(),
-            });
-            
-            let final_response = client
-                .complete(conversation_history, Some(request.temperature), Some(1000))
-                .await
-                .context("Failed to get final answer")?;
-            
-            final_answer = final_response.content;
-        }
+        None
+    }
+    
+    fn build_reasoning_response(
+        &self,
+        request: &TracedReasoningRequest,
+        generated_content: String,
+        thought_type: StepType,
+        metrics: StepMetrics,
+        confidence: f32,
+        model: &str,
+    ) -> TracedReasoningResponse {
+        let metadata = TracedReasoningMetadata {
+            thought_history_length: self.thought_history.len() as u32,
+            interventions_count: self.interventions.len() as u32,
+            semantic_coherence: metrics.semantic_similarity.unwrap_or(1.0),
+            current_confidence: confidence,
+            is_revision: request.is_revision,
+            revises_thought: request.revises_thought,
+            branch_id: request.branch_id.clone(),
+            needs_more_thoughts: request.needs_more_thoughts,
+        };
         
-        let metrics = self.calculate_overall_metrics(&reasoning_steps);
-        let confidence_score = self.calculate_final_confidence(&metrics, &interventions);
+        let status = if request.next_thought_needed {
+            "thinking".to_string()
+        } else {
+            "conclusion_reached".to_string()
+        };
         
-        Ok(TracedReasoningResponse {
-            final_answer,
-            reasoning_steps,
+        let next_steps = if request.next_thought_needed {
+            let remaining = request.total_thoughts - request.thought_number;
+            Some(format!(
+                "Continue with thought {}. Approximately {} thoughts remaining.",
+                request.thought_number + 1, remaining
+            ))
+        } else {
+            None
+        };
+        
+        TracedReasoningResponse {
+            status,
+            thought_number: request.thought_number,
+            total_thoughts: request.total_thoughts,
+            next_thought_needed: request.next_thought_needed,
+            thought_content: generated_content,
+            thought_type,
             metrics,
-            interventions,
-            confidence_score,
-            model_used: model,
-        })
+            metadata,
+            continuation_id: None,
+            reasoning_complete: None,
+            final_answer: None,
+            next_steps,
+            intervention: None,
+            overall_metrics: None,
+            model_used: Some(model.to_string()),
+        }
     }
     
     fn build_system_prompt(&self, guardrails: &GuardrailConfig) -> String {
@@ -397,13 +686,14 @@ impl TracedReasoningTool {
         &self,
         thought: &str,
         _original_query: &str,
-        previous_steps: &[ReasoningStep],
+        previous_thoughts: &[ThoughtData],
         _guardrails: &GuardrailConfig,
+        monitor: Arc<parking_lot::Mutex<crate::monitoring::MetacognitiveMonitor>>,
     ) -> Result<StepMetrics> {
         // Use real monitor to analyze the thought
-        let mut monitor = self.monitor.lock().unwrap();
-        let thought_number = previous_steps.len() + 1;
-        let signals = monitor.analyze_thought(thought, thought_number);
+        let mut monitor_guard = monitor.lock();
+        let thought_number = previous_thoughts.len() + 1;
+        let signals = monitor_guard.analyze_thought(thought, thought_number);
         
         // Map MonitoringSignals to StepMetrics
         // circular_score of 0 means no circular reasoning (good), 1 means high circular (bad)
@@ -526,18 +816,18 @@ impl TracedReasoningTool {
         }
     }
     
-    fn calculate_overall_metrics(&self, steps: &[ReasoningStep]) -> ReasoningMetrics {
-        let total_steps = steps.len() as u32;
-        let average_confidence = if steps.is_empty() {
+    fn calculate_overall_metrics(&self, thoughts: &[ThoughtData]) -> ReasoningMetrics {
+        let total_steps = thoughts.len() as u32;
+        let average_confidence = if thoughts.is_empty() {
             0.0
         } else {
-            steps.iter().map(|s| s.confidence).sum::<f32>() / steps.len() as f32
+            thoughts.iter().map(|t| t.confidence).sum::<f32>() / thoughts.len() as f32
         };
         
-        let semantic_coherence = steps
+        let semantic_coherence = thoughts
             .iter()
-            .filter_map(|s| s.metrics.semantic_similarity)
-            .fold(0.0, |acc, x| acc + x) / steps.len().max(1) as f32;
+            .filter_map(|t| t.metrics.semantic_similarity)
+            .fold(0.0, |acc, x| acc + x) / thoughts.len().max(1) as f32;
         
         let reasoning_quality = average_confidence * semantic_coherence;
         
@@ -568,17 +858,26 @@ impl TracedReasoningTool {
     }
     
     fn get_client_for_model(&self, model: &str) -> Result<Arc<dyn LLMClient>> {
+        debug!("Getting client for model: {}", model);
+        debug!("OpenAI key available: {}", self.config.openai_api_key.is_some());
+        debug!("OpenRouter key available: {}", self.config.openrouter_api_key.is_some());
+        
         if self.model_resolver.is_openrouter_model(model) {
+            info!("Using OpenRouter for model: {}", model);
             if self.config.openrouter_api_key.is_none() {
+                error!("OpenRouter API key not configured for model: {}", model);
                 anyhow::bail!("OpenRouter API key not configured");
             }
             
             if let Some((_, client)) = self.openrouter_clients
                 .iter()
                 .find(|(m, _)| m == model) {
+                debug!("Found pre-created OpenRouter client for model: {}", model);
                 Ok(client.clone())
             } else {
-                let api_key = self.config.openrouter_api_key.as_ref().unwrap();
+                debug!("Creating new OpenRouter client for model: {}", model);
+                let api_key = self.config.openrouter_api_key.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not available"))?;
                 let new_client = OpenRouterClient::new(
                     api_key.clone(),
                     model.to_string(),
@@ -587,8 +886,10 @@ impl TracedReasoningTool {
                 Ok(Arc::new(new_client) as Arc<dyn LLMClient>)
             }
         } else {
+            info!("Using OpenAI for model: {}", model);
             if self.openai_client.is_some() {
                 if let Some(api_key) = &self.config.openai_api_key {
+                    debug!("Creating OpenAI client for model: {}", model);
                     let new_client = OpenAIClient::new(
                         api_key.clone(),
                         model.to_string(),
@@ -596,9 +897,11 @@ impl TracedReasoningTool {
                     )?;
                     Ok(Arc::new(new_client) as Arc<dyn LLMClient>)
                 } else {
+                    error!("OpenAI API key not configured but client exists");
                     anyhow::bail!("OpenAI API key not configured");
                 }
             } else {
+                error!("OpenAI client not initialized - API key missing");
                 anyhow::bail!("OpenAI API key not configured");
             }
         }

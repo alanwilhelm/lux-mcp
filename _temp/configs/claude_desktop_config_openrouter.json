@@ -1,0 +1,11 @@
+{
+  "lux": {
+    "command": "/Users/alan/Projects/_MCP/nirvana/lux-mcp/target/release/lux-mcp",
+    "env": {
+      "OPENROUTER_API_KEY": "YOUR_OPENROUTER_KEY_HERE",
+      "LUX_DEFAULT_CHAT_MODEL": "claude",
+      "LUX_DEFAULT_REASONING_MODEL": "gemini",
+      "LUX_DEFAULT_BIAS_CHECKER_MODEL": "flash"
+    }
+  }
+}

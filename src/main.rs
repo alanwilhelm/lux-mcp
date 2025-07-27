@@ -10,6 +10,7 @@ mod models;
 mod llm;
 mod tools;
 mod server;
+mod session;
 
 use server::LuxServer;
 
@@ -29,9 +30,13 @@ async fn main() -> Result<()> {
 
     info!("Starting Lux MCP Server v{} - Illuminating your thinking...", env!("CARGO_PKG_VERSION"));
 
-    // Check API keys
-    let openai_available = std::env::var("OPENAI_API_KEY").is_ok();
-    let openrouter_available = std::env::var("OPENROUTER_API_KEY").is_ok();
+    // Check API keys (non-empty)
+    let openai_available = std::env::var("OPENAI_API_KEY")
+        .map(|key| !key.is_empty())
+        .unwrap_or(false);
+    let openrouter_available = std::env::var("OPENROUTER_API_KEY")
+        .map(|key| !key.is_empty())
+        .unwrap_or(false);
 
     info!("API Configuration:");
     info!("  OpenAI API key: {}", if openai_available { "✓ Available" } else { "✗ Not found" });
@@ -42,9 +47,30 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Load config to show model defaults
+    let config = llm::config::LLMConfig::from_env()?;
+    info!("Default Models:");
+    info!("  Chat (confer): {}", config.default_chat_model);
+    info!("  Reasoning (traced_reasoning): {}", config.default_reasoning_model);
+    info!("  Bias Checker (biased_reasoning): {}", config.default_bias_checker_model);
+
     // Create the server
     let server = LuxServer::new()?;
     info!("Lux server initialized successfully");
+
+    // Spawn session cleanup task
+    let session_manager = server.session_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            interval.tick().await;
+            let removed = session_manager.cleanup_expired_sessions();
+            if removed > 0 {
+                tracing::info!("Session cleanup: removed {} expired sessions", removed);
+            }
+        }
+    });
+    info!("Session cleanup task started (5 minute interval)");
 
     // Create transport using stdin/stdout
     let transport = (stdin(), stdout());

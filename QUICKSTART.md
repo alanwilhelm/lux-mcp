@@ -259,11 +259,114 @@ The tool provides:
 
 Override these via environment variables or request parameters.
 
+## Interactive Planner Tool
+
+The `planner` tool provides interactive sequential planning with step-by-step building, branching, and revision capabilities:
+
+### Basic Usage - Step 1
+```json
+{
+  "tool": "planner",
+  "arguments": {
+    "step": "Design a scalable e-commerce platform with microservices architecture",
+    "step_number": 1,
+    "total_steps": 7,
+    "next_step_required": true
+  }
+}
+```
+
+### Continue Planning - Step 2
+```json
+{
+  "tool": "planner",
+  "arguments": {
+    "step": "Identify service boundaries based on business domains and data ownership",
+    "step_number": 2,
+    "total_steps": 7,
+    "next_step_required": true
+  }
+}
+```
+
+### Branch to Explore Alternatives
+```json
+{
+  "tool": "planner",
+  "arguments": {
+    "step": "BRANCH: Explore event-driven architecture instead of REST APIs",
+    "step_number": 3,
+    "total_steps": 7,
+    "next_step_required": true,
+    "is_branch_point": true,
+    "branch_from_step": 2,
+    "branch_id": "event-driven-approach"
+  }
+}
+```
+
+### Revise Earlier Steps
+```json
+{
+  "tool": "planner",
+  "arguments": {
+    "step": "REVISION: Reconsider service boundaries to minimize inter-service communication",
+    "step_number": 4,
+    "total_steps": 7,
+    "next_step_required": true,
+    "is_step_revision": true,
+    "revises_step_number": 2
+  }
+}
+```
+
+### Complete Planning
+```json
+{
+  "tool": "planner",
+  "arguments": {
+    "step": "Finalize deployment strategy with CI/CD pipelines and monitoring",
+    "step_number": 7,
+    "total_steps": 7,
+    "next_step_required": false
+  }
+}
+```
+
+### Features
+- **Interactive Planning**: Build plans step-by-step with full context awareness
+- **Deep Thinking Pauses**: For complex plans (≥5 steps), enforces reflection in early steps
+- **Branching**: Explore alternative approaches while maintaining the main path
+- **Revisions**: Update earlier steps based on new insights
+- **Dynamic Adjustment**: Adjust total steps as understanding evolves
+- **State Persistence**: Maintains planning history throughout the session
+- **Metacognitive Monitoring**: Detects circular reasoning and quality issues
+
+### Deep Thinking Mode
+For plans with 5+ steps, the first 3 steps trigger mandatory deep thinking pauses:
+- Step 1: Analyze scope, approaches, constraints, and success criteria
+- Step 2: Evaluate approach, identify phases, dependencies, and resources
+- Step 3: Validate completeness, check gaps, plan adaptation strategies
+
+### Example Planning Session
+1. Start with problem description (step 1)
+2. Continue with analysis and decomposition
+3. Branch to explore alternatives
+4. Revise based on new insights
+5. Complete with actionable plan
+
+The final output includes:
+- Complete planning journey with all steps
+- Branches explored with their outcomes
+- Revisions made and reasoning
+- Structured, actionable plan ready for implementation
+
 ## Next Steps
 
 - Try different models with `lux_chat`
 - Explore `traced_reasoning` for complex problem solving
 - Use `biased_reasoning` for dual-model verification and bias detection
+- Use `planner` for interactive step-by-step planning with branching
 
 ## Support
 

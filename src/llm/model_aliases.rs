@@ -8,6 +8,11 @@ impl ModelResolver {
     pub fn new() -> Self {
         let mut aliases = HashMap::new();
         
+        // Basic GPT-4 variants
+        aliases.insert("gpt4".to_string(), "gpt-4".to_string());
+        aliases.insert("gpt-4".to_string(), "gpt-4".to_string());
+        aliases.insert("4".to_string(), "gpt-4".to_string());
+        
         // GPT-4.1 variants
         aliases.insert("gpt4.1".to_string(), "gpt-4-turbo-preview".to_string());
         aliases.insert("gpt-4.1".to_string(), "gpt-4-turbo-preview".to_string());
@@ -15,21 +20,26 @@ impl ModelResolver {
         aliases.insert("gpt41".to_string(), "gpt-4-turbo-preview".to_string());
         aliases.insert("gpt-4-turbo".to_string(), "gpt-4-turbo-preview".to_string());
         
-        // O3 variants
+        // O3 variants - map to full model names
         aliases.insert("o3".to_string(), "o3".to_string());
-        aliases.insert("o3-pro".to_string(), "o3-pro".to_string());
-        aliases.insert("o3pro".to_string(), "o3-pro".to_string());
+        aliases.insert("o3-pro".to_string(), "o3-pro-2025-06-10".to_string());
+        aliases.insert("o3pro".to_string(), "o3-pro-2025-06-10".to_string());
         
-        // O4 variants
+        // O4 variants - direct model names
         aliases.insert("o4-mini".to_string(), "o4-mini".to_string());
         aliases.insert("o4mini".to_string(), "o4-mini".to_string());
-        aliases.insert("mini".to_string(), "o4-mini".to_string());
+        
+        // GPT-4o-mini variants
+        aliases.insert("mini".to_string(), "gpt-4o-mini".to_string());
+        aliases.insert("4omini".to_string(), "gpt-4o-mini".to_string());
+        aliases.insert("gpt4o-mini".to_string(), "gpt-4o-mini".to_string());
+        aliases.insert("gpt-4o-mini".to_string(), "gpt-4o-mini".to_string());
         
         // Claude variants (via OpenRouter)
         aliases.insert("claude".to_string(), "anthropic/claude-4-sonnet".to_string());
         aliases.insert("claude3".to_string(), "anthropic/claude-3-opus".to_string());
         aliases.insert("claude-3".to_string(), "anthropic/claude-3-opus".to_string());
-        aliases.insert("opus".to_string(), "anthropic/claude-3-opus".to_string());
+        aliases.insert("opus".to_string(), "anthropic/claude-4-opus".to_string());
         aliases.insert("claude-opus".to_string(), "anthropic/claude-3-opus".to_string());
         aliases.insert("sonnet".to_string(), "anthropic/claude-3-sonnet".to_string());
         aliases.insert("claude-sonnet".to_string(), "anthropic/claude-3-sonnet".to_string());
@@ -153,8 +163,8 @@ mod tests {
         assert_eq!(resolver.resolve("gpt4o-mini"), "gpt-4o-mini");
         
         // Test Claude
-        assert_eq!(resolver.resolve("claude"), "anthropic/claude-3-opus");
-        assert_eq!(resolver.resolve("opus"), "anthropic/claude-3-opus");
+        assert_eq!(resolver.resolve("claude"), "anthropic/claude-4-sonnet");
+        assert_eq!(resolver.resolve("opus"), "anthropic/claude-4-opus");
         assert_eq!(resolver.resolve("sonnet"), "anthropic/claude-3-sonnet");
         assert_eq!(resolver.resolve("claude-3.5"), "anthropic/claude-3.5-sonnet");
         

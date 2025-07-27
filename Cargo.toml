@@ -33,6 +33,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # UUID generation
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Better mutex performance
+parking_lot = "0.12"
+
+# Text processing for circular reasoning detection
+unicode-segmentation = "1.10"
+
 # HTTP client
 reqwest = { version = "0.11", features = ["json", "stream"] }
 

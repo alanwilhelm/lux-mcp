@@ -1,0 +1,9 @@
+Fix OpenAI Responses API for o3 models
+
+- Update reasoning_effort parameter to nested reasoning.effort structure
+- OpenAI API changed in Jan 2025, breaking o3/o3-pro model calls
+- Add ReasoningConfig struct to properly format the request
+- Update logging to handle nested reasoning parameter
+- All o3 models now work correctly with high reasoning effort
+
+Fixes: "Unsupported parameter: 'reasoning_effort'" error

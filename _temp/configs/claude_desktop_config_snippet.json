@@ -1,0 +1,12 @@
+{
+  "lux": {
+    "command": "/Users/alan/Projects/_MCP/nirvana/lux-mcp/target/release/lux-mcp",
+    "env": {
+      "OPENAI_API_KEY": "YOUR_OPENAI_API_KEY_HERE",
+      "LUX_DEFAULT_CHAT_MODEL": "gpt-4-turbo-preview",
+      "LUX_DEFAULT_REASONING_MODEL": "o3-pro",
+      "LUX_DEFAULT_BIAS_CHECKER_MODEL": "o4-mini",
+      "RUST_LOG": "info"
+    }
+  }
+}

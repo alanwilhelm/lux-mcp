@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, error};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -21,6 +21,8 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,18 +98,28 @@ impl ChatTool {
     }
     
     pub async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        info!("Chat request received - Message: {}, Model: {:?}, Temperature: {:?}", 
+            request.message, request.model, request.temperature);
+        
         // Resolve model alias
         let model = request.model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
             .unwrap_or_else(|| self.config.default_chat_model.clone());
         
-        debug!("Resolved model '{}' for chat request", model);
+        info!("Resolved model: {} (requested: {:?}, default: {})", 
+            model, request.model, self.config.default_chat_model);
+        
+        // Check API keys
+        debug!("OpenAI key available: {}", self.config.openai_api_key.is_some());
+        debug!("OpenRouter key available: {}", self.config.openrouter_api_key.is_some());
         
         // Determine which client to use
         let client: Arc<dyn LLMClient> = if self.model_resolver.is_openrouter_model(&model) {
             // OpenRouter model
+            info!("Using OpenRouter for model: {}", model);
             if self.config.openrouter_api_key.is_none() {
+                error!("OpenRouter API key not configured");
                 anyhow::bail!(
                     "OpenRouter API key not configured. Please set OPENROUTER_API_KEY"
                 );
@@ -120,7 +132,8 @@ impl ChatTool {
                 client.clone()
             } else {
                 // Create a new client for this model
-                let api_key = self.config.openrouter_api_key.as_ref().unwrap();
+                let api_key = self.config.openrouter_api_key.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not available"))?;
                 let new_client = OpenRouterClient::new(
                     api_key.clone(),
                     model.clone(),
@@ -130,9 +143,11 @@ impl ChatTool {
             }
         } else {
             // OpenAI model
-            if let Some(client) = &self.openai_client {
+            info!("Using OpenAI for model: {}", model);
+            if let Some(_client) = &self.openai_client {
                 // Create a new client with the specific model
                 if let Some(api_key) = &self.config.openai_api_key {
+                    debug!("Creating OpenAI client for model: {}", model);
                     let new_client = OpenAIClient::new(
                         api_key.clone(),
                         model.clone(),
@@ -140,9 +155,11 @@ impl ChatTool {
                     )?;
                     Arc::new(new_client) as Arc<dyn LLMClient>
                 } else {
+                    error!("OpenAI API key not configured");
                     anyhow::bail!("OpenAI API key not configured. Please set OPENAI_API_KEY");
                 }
             } else {
+                error!("OpenAI client not initialized - API key missing");
                 anyhow::bail!("OpenAI API key not configured. Please set OPENAI_API_KEY");
             }
         };
@@ -153,12 +170,32 @@ impl ChatTool {
             content: request.message.clone(),
         }];
         
-        // Make the request
-        info!("Sending chat request to model '{}'", model);
+        // Make the request with default max_tokens if not specified
+        // Use maximum tokens for o3 models to ensure highest reasoning capability
+        let max_tokens = if model.starts_with("o3") {
+            request.max_tokens.unwrap_or(32768)  // Maximum tokens for o3 models
+        } else {
+            request.max_tokens.unwrap_or(10000)  // Default for other models
+        };
+        
+        info!("🚀 Sending chat request to model '{}' with max_tokens: {}", model, max_tokens);
+        if model.starts_with("o3") {
+            info!("⏳ Using {} for deep reasoning. This may take 30 seconds to 5 minutes...", model);
+            info!("💭 The model is thinking deeply about your question...");
+        }
+        
+        let start_time = std::time::Instant::now();
         let response = client
-            .complete(messages, request.temperature, request.max_tokens)
+            .complete(messages, request.temperature, Some(max_tokens))
             .await
-            .context("Failed to complete chat request")?;
+            .map_err(|e| {
+                let elapsed = start_time.elapsed();
+                error!("Chat request failed after {:?}: {}", elapsed, e);
+                anyhow::anyhow!("Failed to complete chat request after {:?}: {}", elapsed, e)
+            })?;
+        
+        let elapsed = start_time.elapsed();
+        info!("✅ {} responded in {:?}", model, elapsed);
         
         Ok(ChatResponse {
             content: response.content,
