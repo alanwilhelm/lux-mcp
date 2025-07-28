@@ -209,16 +209,16 @@ impl BiasedReasoningTool {
             monitor_guard.reset_session();
         }
         
-        // Resolve models
-        let primary_model = request.primary_model
-            .as_ref()
-            .map(|m| self.model_resolver.resolve(m))
-            .unwrap_or_else(|| self.config.default_reasoning_model.clone());
-            
-        let verifier_model = request.verifier_model
-            .as_ref()
-            .map(|m| self.model_resolver.resolve(m))
-            .unwrap_or_else(|| self.config.default_bias_checker_model.clone());
+        // ALWAYS use configured defaults for biased_reasoning
+        // This ensures consistent behavior regardless of request parameters
+        let primary_model = self.model_resolver.resolve(&self.config.default_reasoning_model);
+        let verifier_model = self.model_resolver.resolve(&self.config.default_bias_checker_model);
+        
+        // Log if user tried to override models
+        if request.primary_model.is_some() || request.verifier_model.is_some() {
+            info!("Note: biased_reasoning always uses configured defaults (primary: {}, verifier: {})", 
+                  primary_model, verifier_model);
+        }
         
         info!("Starting biased reasoning with primary: '{}', verifier: '{}'", primary_model, verifier_model);
         

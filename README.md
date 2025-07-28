@@ -160,13 +160,15 @@ Response includes:
 
 Dual-model reasoning where a second model checks for biases.
 
+**Note**: This tool ALWAYS uses the configured default models regardless of parameters:
+- Primary reasoner: `LUX_DEFAULT_REASONING_MODEL` (default: o3-pro)
+- Bias checker: `LUX_DEFAULT_BIAS_CHECKER_MODEL` (default: o4-mini)
+
 ```json
 {
   "tool": "biased_reasoning",
   "arguments": {
     "query": "Should we adopt this new technology?",
-    "primary_model": "o3",  // optional
-    "verifier_model": "claude",  // optional
     "max_steps": 10,  // optional
     "session_id": "optional-session-id",
     "bias_config": {  // optional

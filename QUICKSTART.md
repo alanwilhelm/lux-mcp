@@ -193,7 +193,11 @@ The tool provides:
 
 ## Biased Reasoning Tool
 
-The `biased_reasoning` tool provides dual-model reasoning where each step is verified for bias and reasoning errors:
+The `biased_reasoning` tool provides dual-model reasoning where each step is verified for bias and reasoning errors.
+
+**Important**: This tool ALWAYS uses the configured default models:
+- **Primary Reasoning**: Uses `LUX_DEFAULT_REASONING_MODEL` (default: o3-pro)
+- **Bias Verification**: Uses `LUX_DEFAULT_BIAS_CHECKER_MODEL` (default: o4-mini)
 
 ### Basic Usage
 ```json
@@ -206,14 +210,12 @@ The `biased_reasoning` tool provides dual-model reasoning where each step is ver
 }
 ```
 
-### With Custom Models
+### Configuration Options
 ```json
 {
   "tool": "biased_reasoning",
   "arguments": {
     "query": "What are the pros and cons of cryptocurrency?",
-    "primary_model": "gpt4.1",
-    "verifier_model": "o4-mini",
     "max_steps": 6,
     "temperature": 0.7
   }

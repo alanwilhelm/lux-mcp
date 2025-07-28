@@ -78,6 +78,7 @@ cargo doc --open
    - `confer` - Conversational AI with model selection
    - `traced_reasoning` - Metacognitive reasoning with real-time monitoring
    - `biased_reasoning` - Dual-model verification with bias detection
+     - **Note**: Always uses configured defaults (o3-pro for reasoning, o4-mini for bias checking)
 
 2. **LLM Integration** - Supports both OpenAI and OpenRouter APIs with:
    - Model aliasing for convenience (e.g., "gpt4.1", "claude", "gemini")
