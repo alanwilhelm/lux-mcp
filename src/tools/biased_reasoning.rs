@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, error};
+use parking_lot::Mutex;
+use std::collections::HashMap;
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -14,25 +16,90 @@ use crate::llm::{
 };
 use crate::session::SessionManager;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepType {
+    Query,          // Initial question
+    Reasoning,      // Primary model reasoning
+    BiasAnalysis,   // Bias check result (VISIBLE)
+    Correction,     // Corrected reasoning (VISIBLE)
+    Guidance,       // User input/guidance
+    Synthesis,      // Final compilation
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NextAction {
+    BiasCheck,           // Next step should be bias analysis
+    CorrectionNeeded,    // Bias found, correction recommended
+    ContinueReasoning,   // Continue with next reasoning step
+    AwaitingGuidance,    // Waiting for user input
+    ReadyForSynthesis,   // Ready to compile final answer
+    Complete,            // Process complete
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStatus {
+    pub total_steps: u32,
+    pub reasoning_steps: u32,
+    pub bias_checks: u32,
+    pub corrections_made: u32,
+    pub overall_quality: f32,  // 0.0 to 1.0
+    pub is_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectionDetails {
+    pub original_text: String,
+    pub corrected_text: String,
+    pub changes_made: Vec<String>,
+    pub improvement_score: f32,  // 0.0 to 1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningMetadata {
+    pub thinking_time_ms: u64,
+    pub tokens_generated: Option<u32>,
+    pub confidence_level: f32,
+    pub reasoning_depth: String,  // "shallow", "moderate", "deep"
+}
+
+// Step-by-step request
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BiasedReasoningRequest {
     pub query: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub new_session: Option<bool>,
     #[serde(default)]
     pub primary_model: Option<String>,
     #[serde(default)]
     pub verifier_model: Option<String>,
     #[serde(default = "default_max_steps")]
-    pub max_steps: u32,
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-    #[serde(default)]
-    pub bias_config: BiasCheckConfig,
-    #[serde(default)]
-    pub session_id: Option<String>,
+    pub max_analysis_rounds: u32,
 }
 
-fn default_max_steps() -> u32 { 10 }
-fn default_temperature() -> f32 { 0.7 }
+fn default_max_steps() -> u32 { 3 }
+
+// Step-by-step response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BiasedReasoningResponse {
+    pub session_id: String,
+    pub step_type: StepType,
+    pub step_number: u32,
+    pub content: String,
+    pub model_used: String,
+    pub next_action: NextAction,
+    pub session_status: SessionStatus,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bias_analysis: Option<BiasCheckResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correction_details: Option<CorrectionDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_metadata: Option<ReasoningMetadata>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BiasCheckConfig {
@@ -61,16 +128,6 @@ impl Default for BiasCheckConfig {
             bias_threshold: 0.7,
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BiasedReasoningResponse {
-    pub final_answer: String,
-    pub reasoning_steps: Vec<VerifiedReasoningStep>,
-    pub overall_assessment: OverallAssessment,
-    pub primary_model_used: String,
-    pub verifier_model_used: String,
-    pub detailed_process_log: Vec<ProcessLogEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -134,14 +191,17 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OverallAssessment {
-    pub total_steps: u32,
-    pub biased_steps: u32,
-    pub corrected_steps: u32,
-    pub average_quality: f32,
-    pub most_common_biases: Vec<BiasType>,
-    pub final_quality_assessment: String,
+// Session state for step-by-step processing
+#[derive(Clone)]
+struct SessionState {
+    query: String,
+    step_count: u32,
+    last_step_type: StepType,
+    reasoning_steps: Vec<VerifiedReasoningStep>,
+    detailed_process_log: Vec<ProcessLogEntry>,
+    primary_conversation: Vec<ChatMessage>,
+    bias_counts: HashMap<BiasType, u32>,
+    final_answer: Option<String>,
 }
 
 pub struct BiasedReasoningTool {
@@ -150,6 +210,7 @@ pub struct BiasedReasoningTool {
     openrouter_clients: Vec<(String, Arc<dyn LLMClient>)>,
     model_resolver: ModelResolver,
     config: LLMConfig,
+    sessions: Arc<Mutex<HashMap<String, SessionState>>>,
 }
 
 impl BiasedReasoningTool {
@@ -193,237 +254,337 @@ impl BiasedReasoningTool {
             openrouter_clients,
             model_resolver,
             config,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     
-    pub async fn biased_reasoning(&self, request: BiasedReasoningRequest) -> Result<BiasedReasoningResponse> {
+    // New step-by-step API with proper async handling
+    pub async fn process_step(&self, request: BiasedReasoningRequest) -> Result<BiasedReasoningResponse> {
         use chrono::Utc;
+        use sha2::{Sha256, Digest};
         
-        // Get or create session
-        let session_id = self.session_manager.get_or_create_session(request.session_id);
-        let monitor = self.session_manager.get_monitor(&session_id)?;
+        // Generate or resolve session ID
+        let session_id = if request.new_session.unwrap_or(false) {
+            // Force new session
+            format!("bias_{}", Utc::now().timestamp_millis())
+        } else if let Some(provided_id) = request.session_id {
+            // Use provided session ID
+            provided_id
+        } else {
+            // Generate deterministic ID from query
+            let mut hasher = Sha256::new();
+            hasher.update(request.query.as_bytes());
+            format!("bias_{}", hex::encode(&hasher.finalize()[..8]))
+        };
         
-        // Reset monitor for new request
-        {
-            let mut monitor_guard = monitor.lock();
-            monitor_guard.reset_session();
-        }
-        
-        // ALWAYS use configured defaults for biased_reasoning
-        // This ensures consistent behavior regardless of request parameters
+        // ALWAYS use configured defaults
         let primary_model = self.model_resolver.resolve(&self.config.default_reasoning_model);
         let verifier_model = self.model_resolver.resolve(&self.config.default_bias_checker_model);
         
-        // Log if user tried to override models
-        if request.primary_model.is_some() || request.verifier_model.is_some() {
-            info!("Note: biased_reasoning always uses configured defaults (primary: {}, verifier: {})", 
-                  primary_model, verifier_model);
+        // Initialize session if needed and get step info
+        let (step_type, step_count, is_new_session) = {
+            let mut sessions = self.sessions.lock();
+            
+            if !sessions.contains_key(&session_id) {
+                sessions.insert(session_id.clone(), SessionState {
+                    query: request.query.clone(),
+                    step_count: 1,
+                    last_step_type: StepType::Query,
+                    reasoning_steps: Vec::new(),
+                    detailed_process_log: Vec::new(),
+                    primary_conversation: vec![
+                        ChatMessage {
+                            role: Role::System,
+                            content: "You are a reasoning assistant. Think through problems step-by-step, showing your thinking clearly.".to_string(),
+                        },
+                        ChatMessage {
+                            role: Role::User,
+                            content: format!("Query: {}\n\nPlease reason through this step-by-step.", request.query),
+                        },
+                    ],
+                    bias_counts: HashMap::new(),
+                    final_answer: None,
+                });
+                (StepType::Query, 1, true)
+            } else {
+                let session = sessions.get_mut(&session_id).unwrap();
+                session.step_count += 1;
+                let step_count = session.step_count;
+                
+                // Determine next step type based on last step
+                let step_type = match session.last_step_type {
+                    StepType::Query => StepType::Reasoning,
+                    StepType::Reasoning => StepType::BiasAnalysis,
+                    StepType::BiasAnalysis => StepType::Reasoning,
+                    _ => StepType::Reasoning,
+                };
+                
+                // Update last step type
+                session.last_step_type = step_type.clone();
+                
+                (step_type, step_count, false)
+            }
+        };
+        
+        // Process based on step type
+        match step_type {
+            StepType::Query => {
+                Ok(BiasedReasoningResponse {
+                    session_id: session_id.clone(),
+                    step_type: StepType::Query,
+                    step_number: step_count,
+                    content: format!("Query received: {}\n\nStarting reasoning process...", request.query),
+                    model_used: "none".to_string(),
+                    next_action: NextAction::ContinueReasoning,
+                    session_status: SessionStatus {
+                        total_steps: 1,
+                        reasoning_steps: 0,
+                        bias_checks: 0,
+                        corrections_made: 0,
+                        overall_quality: 1.0,
+                        is_complete: false,
+                    },
+                    bias_analysis: None,
+                    correction_details: None,
+                    reasoning_metadata: None,
+                })
+            },
+            
+            StepType::Reasoning => {
+                self.handle_reasoning_step(session_id, step_count, primary_model).await
+            },
+            
+            StepType::BiasAnalysis => {
+                self.handle_bias_analysis_step(session_id, step_count, verifier_model, request.max_analysis_rounds).await
+            },
+            
+            _ => {
+                Err(anyhow::anyhow!("Step type not yet implemented: {:?}", step_type))
+            }
         }
+    }
+    
+    async fn handle_reasoning_step(
+        &self,
+        session_id: String,
+        step_count: u32,
+        primary_model: String,
+    ) -> Result<BiasedReasoningResponse> {
+        use chrono::Utc;
         
-        info!("Starting biased reasoning with primary: '{}', verifier: '{}'", primary_model, verifier_model);
+        // Get conversation from session
+        let conversation = {
+            let sessions = self.sessions.lock();
+            sessions.get(&session_id)
+                .map(|s| s.primary_conversation.clone())
+                .unwrap_or_default()
+        };
         
-        // Warn about o3 model usage
-        if primary_model.starts_with("o3") || verifier_model.starts_with("o3") {
-            info!("⏳ Using o3 models - expect longer processing times (30s-5min per step)");
-            info!("💭 Deep reasoning in progress. This is normal and expected...");
-        }
-        
-        // Get clients
         let primary_client = self.get_client_for_model(&primary_model)?;
+        
+        info!("🧠 Generating reasoning step with {}", primary_model);
+        let start = Instant::now();
+        
+        let primary_response = primary_client
+            .complete(conversation, Some(0.7), Some(10000))
+            .await
+            .context("Failed to get reasoning step")?;
+        
+        let duration = start.elapsed();
+        info!("✅ {} completed reasoning in {:?}", primary_model, duration);
+        
+        // Update session with new reasoning
+        let session_status = {
+            let mut sessions = self.sessions.lock();
+            if let Some(session) = sessions.get_mut(&session_id) {
+                // Add to conversation
+                session.primary_conversation.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: primary_response.content.clone(),
+                });
+                
+                // Log the step
+                session.detailed_process_log.push(ProcessLogEntry {
+                    action_type: ProcessActionType::PrimaryReasoning,
+                    step_number: step_count,
+                    timestamp: Utc::now().to_rfc3339(),
+                    model_used: primary_model.clone(),
+                    content: format!("Generated reasoning step:\n{}", primary_response.content),
+                    duration_ms: Some(duration.as_millis() as u64),
+                });
+                
+                SessionStatus {
+                    total_steps: step_count,
+                    reasoning_steps: session.reasoning_steps.len() as u32 + 1,
+                    bias_checks: session.reasoning_steps.iter().filter(|s| s.bias_check.has_bias).count() as u32,
+                    corrections_made: session.reasoning_steps.iter().filter(|s| s.corrected_thought.is_some()).count() as u32,
+                    overall_quality: 0.8,
+                    is_complete: false,
+                }
+            } else {
+                SessionStatus {
+                    total_steps: step_count,
+                    reasoning_steps: 1,
+                    bias_checks: 0,
+                    corrections_made: 0,
+                    overall_quality: 0.8,
+                    is_complete: false,
+                }
+            }
+        };
+        
+        Ok(BiasedReasoningResponse {
+            session_id: session_id.clone(),
+            step_type: StepType::Reasoning,
+            step_number: step_count,
+            content: primary_response.content,
+            model_used: primary_model,
+            next_action: NextAction::BiasCheck,
+            session_status,
+            bias_analysis: None,
+            correction_details: None,
+            reasoning_metadata: Some(ReasoningMetadata {
+                thinking_time_ms: duration.as_millis() as u64,
+                tokens_generated: primary_response.usage.as_ref().map(|u| u.completion_tokens),
+                confidence_level: 0.8,
+                reasoning_depth: "moderate".to_string(),
+            }),
+        })
+    }
+    
+    async fn handle_bias_analysis_step(
+        &self,
+        session_id: String,
+        step_count: u32,
+        verifier_model: String,
+        max_rounds: u32,
+    ) -> Result<BiasedReasoningResponse> {
+        use chrono::Utc;
+        
+        // Get the last reasoning step and query
+        let (last_thought, query) = {
+            let sessions = self.sessions.lock();
+            if let Some(session) = sessions.get(&session_id) {
+                let last_thought = session.primary_conversation.last()
+                    .filter(|m| m.role == Role::Assistant)
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                (last_thought, session.query.clone())
+            } else {
+                return Err(anyhow::anyhow!("Session not found"));
+            }
+        };
+        
         let verifier_client = self.get_client_for_model(&verifier_model)?;
         
-        let mut reasoning_steps = Vec::new();
-        let mut detailed_process_log = Vec::new();
-        let mut primary_conversation = vec![
-            ChatMessage {
-                role: Role::System,
-                content: "You are a reasoning assistant. Think through problems step-by-step, showing your thinking clearly.".to_string(),
-            },
-            ChatMessage {
-                role: Role::User,
-                content: format!(
-                    "Query: {}\n\nPlease reason through this step-by-step.",
-                    request.query
-                ),
-            },
-        ];
+        info!("🔍 Checking for bias with {}", verifier_model);
+        let start = Instant::now();
         
-        let mut step_count = 0;
-        let mut final_answer = String::new();
-        let mut bias_counts: std::collections::HashMap<BiasType, u32> = std::collections::HashMap::new();
+        let bias_check = self.check_step_for_bias(
+            &last_thought,
+            &query,
+            step_count,
+            &verifier_client,
+            &BiasCheckConfig::default(),
+            &verifier_model,
+        ).await?;
         
-        while step_count < request.max_steps {
-            step_count += 1;
-            
-            // Get primary model's reasoning step
-            info!("🔄 Step {}: Generating reasoning with {}", step_count, primary_model);
-            let primary_start = Instant::now();
-            // Use maximum tokens for all models to ensure no truncation
-            let primary_max_tokens = 10000;
-            
-            let primary_response = primary_client
-                .complete(
-                    primary_conversation.clone(),
-                    Some(request.temperature),
-                    Some(primary_max_tokens),
-                )
-                .await
-                .context("Failed to get primary reasoning step")?;
-            let primary_duration = primary_start.elapsed();
-            info!("✅ {} completed step {} in {:?}", primary_model, step_count, primary_duration);
-            
-            let primary_thought = primary_response.content.clone();
-            
-            // Log primary reasoning
-            detailed_process_log.push(ProcessLogEntry {
-                action_type: ProcessActionType::PrimaryReasoning,
-                step_number: step_count,
-                timestamp: Utc::now().to_rfc3339(),
-                model_used: primary_model.clone(),
-                content: format!("Generated reasoning step:\n{}", primary_thought),
-                duration_ms: Some(primary_duration.as_millis() as u64),
-            });
-            
-            // Check for bias using verifier model
-            info!("🔍 Step {}: Checking for bias with {}", step_count, verifier_model);
-            let bias_start = Instant::now();
-            let bias_check = self.check_step_for_bias(
-                &primary_thought,
-                &request.query,
-                step_count,
-                &verifier_client,
-                &request.bias_config,
-                &verifier_model,
-            ).await?;
-            let bias_duration = bias_start.elapsed();
-            info!("✅ Bias check completed in {:?}", bias_duration);
-            
-            // Log bias checking
-            detailed_process_log.push(ProcessLogEntry {
-                action_type: ProcessActionType::BiasChecking,
-                step_number: step_count,
-                timestamp: Utc::now().to_rfc3339(),
-                model_used: verifier_model.clone(),
-                content: format!(
-                    "Bias check results:\n- Has bias: {}\n- Bias types: {:?}\n- Severity: {:?}\n- Explanation: {}\n- Suggestions: {}",
-                    bias_check.has_bias,
-                    bias_check.bias_types,
-                    bias_check.severity,
-                    bias_check.explanation,
-                    bias_check.suggestions.join(", ")
-                ),
-                duration_ms: Some(bias_duration.as_millis() as u64),
-            });
-            
-            // Track bias types
-            for bias_type in &bias_check.bias_types {
-                *bias_counts.entry(bias_type.clone()).or_insert(0) += 1;
-            }
-            
-            // Generate corrected thought if needed
-            let corrected_thought = if bias_check.has_bias && bias_check.severity as u8 >= Severity::Medium as u8 {
-                let correction_start = Instant::now();
-                let corrected = self.generate_corrected_thought(
-                    &primary_thought,
-                    &bias_check,
-                    &verifier_client,
-                ).await?;
-                let correction_duration = correction_start.elapsed();
+        let duration = start.elapsed();
+        info!("✅ Bias check completed in {:?}", duration);
+        
+        // Update session and determine next action
+        let (next_action, session_status) = {
+            let mut sessions = self.sessions.lock();
+            if let Some(session) = sessions.get_mut(&session_id) {
+                // Track bias types
+                for bias_type in &bias_check.bias_types {
+                    *session.bias_counts.entry(bias_type.clone()).or_insert(0) += 1;
+                }
                 
-                // Log correction generation
-                detailed_process_log.push(ProcessLogEntry {
-                    action_type: ProcessActionType::CorrectionGeneration,
+                // Store the verified step
+                session.reasoning_steps.push(VerifiedReasoningStep {
+                    step_number: step_count - 1,
+                    primary_thought: last_thought.clone(),
+                    bias_check: bias_check.clone(),
+                    corrected_thought: None,
+                    step_quality: match bias_check.severity {
+                        Severity::None => 1.0,
+                        Severity::Low => 0.8,
+                        Severity::Medium => 0.6,
+                        Severity::High => 0.4,
+                        Severity::Critical => 0.2,
+                    },
+                });
+                
+                // Log the bias check
+                session.detailed_process_log.push(ProcessLogEntry {
+                    action_type: ProcessActionType::BiasChecking,
                     step_number: step_count,
                     timestamp: Utc::now().to_rfc3339(),
                     model_used: verifier_model.clone(),
-                    content: format!("Generated corrected thought:\n{}", corrected),
-                    duration_ms: Some(correction_duration.as_millis() as u64),
+                    content: format!(
+                        "Bias check results:\n- Has bias: {}\n- Bias types: {:?}\n- Severity: {:?}",
+                        bias_check.has_bias,
+                        bias_check.bias_types,
+                        bias_check.severity
+                    ),
+                    duration_ms: Some(duration.as_millis() as u64),
                 });
                 
-                Some(corrected)
-            } else {
-                None
-            };
-            
-            let step_quality = self.calculate_step_quality(&bias_check);
-            
-            // Log quality assessment
-            detailed_process_log.push(ProcessLogEntry {
-                action_type: ProcessActionType::QualityAssessment,
-                step_number: step_count,
-                timestamp: Utc::now().to_rfc3339(),
-                model_used: "internal".to_string(),
-                content: format!("Step quality score: {:.2}", step_quality),
-                duration_ms: None,
-            });
-            
-            reasoning_steps.push(VerifiedReasoningStep {
-                step_number: step_count,
-                primary_thought: primary_thought.clone(),
-                bias_check,
-                corrected_thought: corrected_thought.clone(),
-                step_quality,
-            });
-            
-            // Add to conversation (use corrected thought if available)
-            let thought_to_continue = corrected_thought.as_ref().unwrap_or(&primary_thought);
-            primary_conversation.push(ChatMessage {
-                role: Role::Assistant,
-                content: thought_to_continue.clone(),
-            });
-            
-            // Check if we have a final answer
-            if self.is_final_answer(&primary_thought) {
-                final_answer = self.extract_final_answer(&primary_thought);
-                break;
-            }
-            
-            // Continue reasoning
-            primary_conversation.push(ChatMessage {
-                role: Role::User,
-                content: "Continue your reasoning to the next step.".to_string(),
-            });
-        }
-        
-        // If no final answer yet, request one
-        if final_answer.is_empty() {
-            primary_conversation.push(ChatMessage {
-                role: Role::User,
-                content: "Based on your reasoning, provide a final answer.".to_string(),
-            });
-            
-            let final_start = Instant::now();
-            // Use maximum tokens for all models to ensure no truncation
-            let final_max_tokens = 10000;
-            
-            let final_response = primary_client
-                .complete(primary_conversation, Some(request.temperature), Some(final_max_tokens))
-                .await?;
-            let final_duration = final_start.elapsed();
+                // Determine next action
+                let next_action = if session.reasoning_steps.len() >= max_rounds as usize {
+                    NextAction::ReadyForSynthesis
+                } else {
+                    NextAction::ContinueReasoning
+                };
                 
-            final_answer = final_response.content;
-            
-            // Log final answer generation
-            detailed_process_log.push(ProcessLogEntry {
-                action_type: ProcessActionType::FinalAnswerGeneration,
-                step_number: step_count + 1,
-                timestamp: Utc::now().to_rfc3339(),
-                model_used: primary_model.clone(),
-                content: format!("Generated final answer:\n{}", final_answer),
-                duration_ms: Some(final_duration.as_millis() as u64),
-            });
-        }
-        
-        // Calculate overall assessment
-        let overall_assessment = self.calculate_overall_assessment(&reasoning_steps, bias_counts);
+                // Add continuation prompt if needed
+                if next_action == NextAction::ContinueReasoning {
+                    session.primary_conversation.push(ChatMessage {
+                        role: Role::User,
+                        content: "Continue your reasoning to the next step.".to_string(),
+                    });
+                }
+                
+                let status = SessionStatus {
+                    total_steps: step_count,
+                    reasoning_steps: session.reasoning_steps.len() as u32,
+                    bias_checks: session.reasoning_steps.iter().filter(|s| s.bias_check.has_bias).count() as u32,
+                    corrections_made: session.reasoning_steps.iter().filter(|s| s.corrected_thought.is_some()).count() as u32,
+                    overall_quality: 0.8,
+                    is_complete: next_action == NextAction::Complete,
+                };
+                
+                (next_action, status)
+            } else {
+                return Err(anyhow::anyhow!("Session not found"));
+            }
+        };
         
         Ok(BiasedReasoningResponse {
-            final_answer,
-            reasoning_steps,
-            overall_assessment,
-            primary_model_used: primary_model,
-            verifier_model_used: verifier_model,
-            detailed_process_log,
+            session_id: session_id.clone(),
+            step_type: StepType::BiasAnalysis,
+            step_number: step_count,
+            content: format!(
+                "Bias Analysis:\n\n{}\n{}\n{}",
+                if bias_check.has_bias { "⚠️ Biases detected!" } else { "✅ No significant biases detected." },
+                if !bias_check.bias_types.is_empty() {
+                    format!("\nBias types: {:?}", bias_check.bias_types)
+                } else {
+                    String::new()
+                },
+                if !bias_check.suggestions.is_empty() {
+                    format!("\nSuggestions: {}", bias_check.suggestions.join(", "))
+                } else {
+                    String::new()
+                }
+            ),
+            model_used: verifier_model,
+            next_action,
+            session_status,
+            bias_analysis: Some(bias_check),
+            correction_details: None,
+            reasoning_metadata: None,
         })
     }
     
@@ -475,14 +636,12 @@ impl BiasedReasoningTool {
             },
         ];
         
-        // Use maximum tokens for all models to ensure no truncation
         let max_tokens = 10000;
         
-        // o4 models only support default temperature (1.0)
         let temperature = if verifier_model_name.starts_with("o4") {
-            None  // Use default temperature for o4 models
+            None
         } else {
-            Some(0.3)  // Use lower temperature for other models for consistency
+            Some(0.3)
         };
         
         let response = verifier_client
@@ -493,12 +652,10 @@ impl BiasedReasoningTool {
                 anyhow::anyhow!("Failed to check for bias with model '{}': {}", verifier_model_name, e)
             })?;
         
-        // Parse the response into structured format
         self.parse_bias_check_response(&response.content)
     }
     
     fn parse_bias_check_response(&self, content: &str) -> Result<BiasCheckResult> {
-        // Simple parsing - in production would use more sophisticated parsing
         let content_lower = content.to_lowercase();
         
         let has_bias = content_lower.contains("yes") || 
@@ -537,7 +694,6 @@ impl BiasedReasoningTool {
             Severity::None
         };
         
-        // Extract suggestions (simplified)
         let suggestions = if has_bias {
             vec!["Consider alternative perspectives".to_string(),
                  "Verify assumptions with evidence".to_string()]
@@ -552,123 +708,6 @@ impl BiasedReasoningTool {
             explanation: content.lines().take(3).collect::<Vec<_>>().join(" "),
             suggestions,
         })
-    }
-    
-    async fn generate_corrected_thought(
-        &self,
-        original_thought: &str,
-        bias_check: &BiasCheckResult,
-        verifier_client: &Arc<dyn LLMClient>,
-    ) -> Result<String> {
-        let correction_prompt = format!(
-            "The following reasoning step has been identified as biased:\n\n\
-            Original: {}\n\n\
-            Issues found: {:?}\n\
-            Explanation: {}\n\n\
-            Please provide a corrected version that addresses these biases while maintaining the logical flow.",
-            original_thought,
-            bias_check.bias_types,
-            bias_check.explanation
-        );
-        
-        let messages = vec![
-            ChatMessage {
-                role: Role::System,
-                content: "You are a reasoning assistant who corrects biased thinking.".to_string(),
-            },
-            ChatMessage {
-                role: Role::User,
-                content: correction_prompt,
-            },
-        ];
-        
-        // Use maximum tokens for all models to ensure no truncation
-        let verifier_model = verifier_client.get_model_name();
-        let max_tokens = 10000;
-        
-        // o4 models only support default temperature (1.0)
-        let temperature = if verifier_model.starts_with("o4") {
-            None  // Use default temperature for o4 models
-        } else {
-            Some(0.5)  // Use moderate temperature for corrections
-        };
-        
-        let response = verifier_client
-            .complete(messages, temperature, Some(max_tokens))
-            .await
-            .context("Failed to generate corrected thought")?;
-        
-        Ok(response.content)
-    }
-    
-    fn calculate_step_quality(&self, bias_check: &BiasCheckResult) -> f32 {
-        match bias_check.severity {
-            Severity::None => 1.0,
-            Severity::Low => 0.8,
-            Severity::Medium => 0.6,
-            Severity::High => 0.4,
-            Severity::Critical => 0.2,
-        }
-    }
-    
-    fn is_final_answer(&self, content: &str) -> bool {
-        let content_lower = content.to_lowercase();
-        content_lower.contains("final answer") || 
-        content_lower.contains("conclusion") ||
-        content_lower.contains("therefore, the answer")
-    }
-    
-    fn extract_final_answer(&self, content: &str) -> String {
-        if let Some(idx) = content.find("Final Answer:") {
-            content[idx + 13..].trim().to_string()
-        } else if let Some(idx) = content.find("Therefore") {
-            content[idx..].trim().to_string()
-        } else {
-            content.trim().to_string()
-        }
-    }
-    
-    fn calculate_overall_assessment(
-        &self,
-        steps: &[VerifiedReasoningStep],
-        bias_counts: std::collections::HashMap<BiasType, u32>,
-    ) -> OverallAssessment {
-        let total_steps = steps.len() as u32;
-        let biased_steps = steps.iter().filter(|s| s.bias_check.has_bias).count() as u32;
-        let corrected_steps = steps.iter().filter(|s| s.corrected_thought.is_some()).count() as u32;
-        
-        let average_quality = if steps.is_empty() {
-            0.0
-        } else {
-            steps.iter().map(|s| s.step_quality).sum::<f32>() / steps.len() as f32
-        };
-        
-        let mut most_common_biases: Vec<(BiasType, u32)> = bias_counts.into_iter().collect();
-        most_common_biases.sort_by(|a, b| b.1.cmp(&a.1));
-        let most_common_biases: Vec<BiasType> = most_common_biases
-            .into_iter()
-            .take(3)
-            .map(|(bias_type, _)| bias_type)
-            .collect();
-        
-        let final_quality_assessment = if average_quality >= 0.9 {
-            "Excellent reasoning with minimal bias"
-        } else if average_quality >= 0.7 {
-            "Good reasoning with some minor biases addressed"
-        } else if average_quality >= 0.5 {
-            "Moderate reasoning quality with significant biases corrected"
-        } else {
-            "Poor reasoning quality with substantial biases detected"
-        }.to_string();
-        
-        OverallAssessment {
-            total_steps,
-            biased_steps,
-            corrected_steps,
-            average_quality,
-            most_common_biases,
-            final_quality_assessment,
-        }
     }
     
     fn get_client_for_model(&self, model: &str) -> Result<Arc<dyn LLMClient>> {

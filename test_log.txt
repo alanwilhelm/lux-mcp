@@ -1,0 +1,19 @@
+[2m2025-07-28T08:23:07.353570Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m31:[0m Starting Lux MCP Server v0.1.0 - Illuminating your thinking...
+[2m2025-07-28T08:23:07.353605Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m41:[0m API Configuration:
+[2m2025-07-28T08:23:07.353609Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m42:[0m   OpenAI API key: ✓ Available
+[2m2025-07-28T08:23:07.353611Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m43:[0m   OpenRouter API key: ✓ Available
+[2m2025-07-28T08:23:07.353649Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m52:[0m Default Models:
+[2m2025-07-28T08:23:07.353654Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m53:[0m   Chat (confer): o3-pro
+[2m2025-07-28T08:23:07.353660Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m54:[0m   Reasoning (traced_reasoning): o3-pro
+[2m2025-07-28T08:23:07.353663Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m55:[0m   Bias Checker (biased_reasoning): o4-mini
+[2m2025-07-28T08:23:07.356247Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m59:[0m Lux server initialized successfully
+[2m2025-07-28T08:23:07.356265Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m73:[0m Session cleanup task started (5 minute interval)
+[2m2025-07-28T08:23:07.356273Z[0m [32m INFO[0m [2msrc/main.rs[0m[2m:[0m[2m79:[0m Starting MCP server on stdio transport
+[2m2025-07-28T08:23:07.356384Z[0m [32m INFO[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/handler/server.rs[0m[2m:[0m[2m216:[0m client initialized
+[2m2025-07-28T08:23:07.356422Z[0m [32m INFO[0m [1mserve_inner[0m[2m:[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/service.rs[0m[2m:[0m[2m564:[0m Service initialized as server [3mpeer_info[0m[2m=[0mSome(InitializeRequestParam { protocol_version: ProtocolVersion("2024-11-05"), capabilities: ClientCapabilities { experimental: None, roots: None, sampling: None }, client_info: Implementation { name: "test-client", version: "1.0.0" } })
+[2m2025-07-28T08:23:07.356457Z[0m [34mDEBUG[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/service.rs[0m[2m:[0m[2m738:[0m received request [3mid[0m[2m=[0m2 [3mrequest[0m[2m=[0mCallToolRequest(Request { method: CallToolRequestMethod, params: CallToolRequestParam { name: "biased_reasoning", arguments: Some({"query": String("test")}) }, extensions: Extensions })
+[2m2025-07-28T08:23:07.356481Z[0m [32m INFO[0m [2msrc/server/handler.rs[0m[2m:[0m[2m270:[0m Tool request: biased_reasoning
+[2m2025-07-28T08:23:07.356485Z[0m [34mDEBUG[0m [2msrc/server/handler.rs[0m[2m:[0m[2m271:[0m Tool arguments: Some({"query": String("test")})
+[2m2025-07-28T08:23:07.356496Z[0m [32m INFO[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/service.rs[0m[2m:[0m[2m619:[0m input stream terminated
+[2m2025-07-28T08:23:07.356517Z[0m [32m INFO[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/service.rs[0m[2m:[0m[2m850:[0m serve finished [3mquit_reason[0m[2m=[0mClosed
+[2m2025-07-28T08:23:07.356503Z[0m [34mDEBUG[0m [2m/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.2.1/src/service.rs[0m[2m:[0m[2m762:[0m response message [3mid[0m[2m=[0m2 [3mresult[0m[2m=[0mCallToolResult(CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: "📝 **Query Received**\n\nQuery received: test\n\nStarting reasoning process...\n\nStatus: 1 total steps\nNext: ContinueReasoning" }), annotations: None }], is_error: Some(false) })

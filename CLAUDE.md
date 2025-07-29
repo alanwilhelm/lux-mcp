@@ -77,8 +77,12 @@ cargo doc --open
 1. **Tools** - Three main tools exposed via MCP:
    - `confer` - Conversational AI with model selection
    - `traced_reasoning` - Metacognitive reasoning with real-time monitoring
-   - `biased_reasoning` - Dual-model verification with bias detection
+   - `biased_reasoning` - Step-by-step dual-model verification with visible bias detection
      - **Note**: Always uses configured defaults (o3-pro for reasoning, o4-mini for bias checking)
+     - Works step-by-step with visible individual interactions
+     - Each reasoning step is followed by a visible bias analysis step
+     - Tracks context in a session list similar to sequential thinking
+     - Returns step_type, step_number, content, model_used, and next_action
 
 2. **LLM Integration** - Supports both OpenAI and OpenRouter APIs with:
    - Model aliasing for convenience (e.g., "gpt4.1", "claude", "gemini")
@@ -315,10 +319,20 @@ Since Lux tools delegate reasoning to external models (o3, gpt-4, etc.) that don
    {
      "tool": "biased_reasoning",
      "arguments": {
-       "query": "Review this API design for potential biases:\n[FULL API SPECIFICATION HERE]\n\nCurrent user model:\n[USER MODEL SCHEMA HERE]"
+       "query": "Review this API design for potential biases:\n[FULL API SPECIFICATION HERE]\n\nCurrent user model:\n[USER MODEL SCHEMA HERE]",
+       "max_analysis_rounds": 3  // Optional, defaults to 3
      }
    }
    ```
+   
+   **Step-by-Step Response Format:**
+   - Each call returns a single step with:
+     - `step_type`: Query, Reasoning, BiasAnalysis, Correction, Guidance, or Synthesis
+     - `step_number`: Current step number
+     - `content`: The actual content of this step
+     - `model_used`: Which model was used (e.g., "o3-pro" or "o4-mini")
+     - `next_action`: What should happen next (BiasCheck, ContinueReasoning, etc.)
+     - `session_status`: Overall progress tracking
 
 ### Guidelines:
 - **Always read full files** before calling lux tools for code-related tasks

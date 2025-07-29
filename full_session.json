@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"prompts":{},"tools":{}},"serverInfo":{"name":"lux-mcp","version":"0.1.0"},"instructions":"Illuminate your thinking - A metacognitive monitoring MCP server"}}
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"📝 **Query Received**\n\nQuery received: test simple query\n\nStarting reasoning process...\n\nSession ID: bias_660ab916616e564e\nStatus: 1 total steps\nNext: ContinueReasoning"}],"isError":false}}
+{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"📝 **Query Received**\n\nQuery received: test simple query\n\nStarting reasoning process...\n\nSession ID: bias_1753691171522\nStatus: 1 total steps\nNext: ContinueReasoning"}],"isError":false}}

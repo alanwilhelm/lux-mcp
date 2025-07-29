@@ -15,7 +15,10 @@ use anyhow::Context as AnyhowContext;
 use std::sync::Arc;
 
 use super::LuxServer;
-use crate::tools::{ChatRequest, TracedReasoningRequest, BiasedReasoningRequest, PlannerRequest};
+use crate::tools::{
+    ChatRequest, TracedReasoningRequest, BiasedReasoningRequest, PlannerRequest,
+    StepType, NextAction
+};
 
 fn json_to_arc_map(value: Value) -> Arc<Map<String, Value>> {
     Arc::new(value.as_object().cloned().unwrap_or_default())
@@ -148,13 +151,21 @@ impl ServerHandler for LuxServer {
             },
             Tool {
                 name: "biased_reasoning".into(),
-                description: Some("Dual-model reasoning with bias detection and verification".into()),
+                description: Some("Step-by-step dual-model reasoning with bias detection. Returns one step per call with session_id for continuity.".into()),
                 input_schema: json_to_arc_map(json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
                             "description": "The question or problem to analyze for bias"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session ID to continue an existing reasoning session"
+                        },
+                        "new_session": {
+                            "type": "boolean",
+                            "description": "Force start a new session even if query matches existing (default: false)"
                         },
                         "primary_model": {
                             "type": "string",
@@ -454,114 +465,109 @@ impl ServerHandler for LuxServer {
                     return Err(McpError::invalid_params("Missing arguments for biased reasoning", None));
                 };
                 
-                let response = self.biased_reasoning_tool.biased_reasoning(req).await
+                let response = self.biased_reasoning_tool.process_step(req).await
                     .map_err(|e| McpError::internal_error(format!("Biased reasoning error: {}", e), None))?;
                 
-                // Format detailed process log
-                let mut process_log_text = String::new();
-                process_log_text.push_str("📋 **DETAILED PROCESS LOG** 📋\n\n");
-                
-                for (idx, entry) in response.detailed_process_log.iter().enumerate() {
-                    let action_icon = match entry.action_type {
-                        crate::tools::ProcessActionType::PrimaryReasoning => "🧠",
-                        crate::tools::ProcessActionType::BiasChecking => "🔍",
-                        crate::tools::ProcessActionType::CorrectionGeneration => "✏️",
-                        crate::tools::ProcessActionType::QualityAssessment => "📊",
-                        crate::tools::ProcessActionType::FinalAnswerGeneration => "✅",
-                    };
-                    
-                    process_log_text.push_str(&format!(
-                        "{} **Step {} - {:?}**\n\
-                        ⏰ Time: {}\n\
-                        🤖 Model: {}\n",
-                        action_icon,
-                        entry.step_number,
-                        entry.action_type,
-                        entry.timestamp,
-                        entry.model_used
-                    ));
-                    
-                    if let Some(duration) = entry.duration_ms {
-                        process_log_text.push_str(&format!("⚡ Duration: {}ms\n", duration));
-                    }
-                    
-                    process_log_text.push_str(&format!("\n{}\n", entry.content));
-                    process_log_text.push_str("\n---\n\n");
-                }
-                
-                // Format reasoning steps summary
-                let mut steps_summary = String::new();
-                steps_summary.push_str("🔄 **REASONING STEPS SUMMARY** 🔄\n\n");
-                
-                for step in &response.reasoning_steps {
-                    steps_summary.push_str(&format!(
-                        "**Step {}:**\n\
-                        • Quality Score: {:.2}\n\
-                        • Bias Detected: {}\n",
-                        step.step_number,
-                        step.step_quality,
-                        if step.bias_check.has_bias { "Yes" } else { "No" }
-                    ));
-                    
-                    if step.bias_check.has_bias {
-                        steps_summary.push_str(&format!(
-                            "• Bias Types: {:?}\n\
-                            • Severity: {:?}\n",
-                            step.bias_check.bias_types,
-                            step.bias_check.severity
-                        ));
-                        
-                        if step.corrected_thought.is_some() {
-                            steps_summary.push_str("• Correction Applied: ✅\n");
-                        }
-                    }
-                    
-                    steps_summary.push_str("\n");
-                }
-                
-                // Format overall assessment
-                let assessment_text = format!(
-                    "📊 **OVERALL ASSESSMENT** 📊\n\n\
-                    • Total Steps: {}\n\
-                    • Biased Steps: {} ({:.1}%)\n\
-                    • Corrected Steps: {}\n\
-                    • Average Quality: {:.2}\n\
-                    • Most Common Biases: {:?}\n\
-                    • Final Assessment: {}\n",
-                    response.overall_assessment.total_steps,
-                    response.overall_assessment.biased_steps,
-                    (response.overall_assessment.biased_steps as f32 / response.overall_assessment.total_steps as f32) * 100.0,
-                    response.overall_assessment.corrected_steps,
-                    response.overall_assessment.average_quality,
-                    response.overall_assessment.most_common_biases,
-                    response.overall_assessment.final_quality_assessment
-                );
-                
-                // Format complete response with all details
-                let formatted_response = format!(
-                    "⚖️ **BIAS-CHECKED REASONING COMPLETE** ⚖️\n\n\
-                    🤖 **Models Used:**\n\
-                    • Primary: {}\n\
-                    • Verifier: {}\n\n\
-                    {}\
-                    {}\
-                    {}\
-                    ✨ **FINAL ANSWER** ✨\n\n{}\n\n\
-                    ---\n\n\
-                    🎯 **REQUIRED ACTIONS:**\n\
-                    1. ✅ REVIEW the detailed process log above\n\
-                    2. ✅ NOTE any biases that were detected and corrected\n\
-                    3. ✅ INTEGRATE this verified reasoning into your response\n\
-                    4. ✅ HIGHLIGHT important caveats based on the bias analysis\n\
-                    5. ✅ PROVIDE actionable guidance using the bias-checked conclusion\n\n\
-                    ⚡ **This analysis shows EVERY step of the reasoning chain with bias checking!** ⚡",
-                    response.primary_model_used,
-                    response.verifier_model_used,
-                    process_log_text,
-                    steps_summary,
-                    assessment_text,
-                    response.final_answer
-                );
+                // Format response based on step type
+                let formatted_response = match response.step_type {
+                    StepType::Query => {
+                        format!(
+                            "📝 **Query Received**\n\n\
+                            {}\n\n\
+                            Session ID: {}\n\
+                            Status: {} total steps\n\
+                            Next: {:?}",
+                            response.content,
+                            response.session_id,
+                            response.session_status.total_steps,
+                            response.next_action
+                        )
+                    },
+                    StepType::Reasoning => {
+                        let metadata = response.reasoning_metadata.as_ref();
+                        format!(
+                            "🧠 **Reasoning Step {}**\n\n\
+                            {}\n\n\
+                            Session ID: {}\n\
+                            Model: {}\n\
+                            Thinking Time: {}ms\n\
+                            Depth: {}\n\
+                            Next: {:?}\n\n\
+                            Session Progress: {}/{} steps",
+                            response.step_number,
+                            response.content,
+                            response.session_id,
+                            response.model_used,
+                            metadata.map(|m| m.thinking_time_ms).unwrap_or(0),
+                            metadata.map(|m| m.reasoning_depth.clone()).unwrap_or_else(|| "unknown".to_string()),
+                            response.next_action,
+                            response.session_status.reasoning_steps,
+                            response.session_status.total_steps
+                        )
+                    },
+                    StepType::BiasAnalysis => {
+                        format!(
+                            "🔍 **Bias Analysis Step {}**\n\n\
+                            {}\n\n\
+                            Session ID: {}\n\
+                            Model: {}\n\
+                            Next: {:?}\n\n\
+                            Quality Score: {:.2}",
+                            response.step_number,
+                            response.content,
+                            response.session_id,
+                            response.model_used,
+                            response.next_action,
+                            response.session_status.overall_quality
+                        )
+                    },
+                    StepType::Correction => {
+                        let details = response.correction_details.as_ref();
+                        format!(
+                            "✏️ **Correction Step {}**\n\n\
+                            {}\n\n\
+                            Model: {}\n\
+                            Improvement Score: {:.2}\n\
+                            Next: {:?}",
+                            response.step_number,
+                            response.content,
+                            response.model_used,
+                            details.map(|d| d.improvement_score).unwrap_or(0.0),
+                            response.next_action
+                        )
+                    },
+                    StepType::Guidance => {
+                        format!(
+                            "📝 **User Guidance Step {}**\n\n\
+                            {}\n\n\
+                            Next: {:?}",
+                            response.step_number,
+                            response.content,
+                            response.next_action
+                        )
+                    },
+                    StepType::Synthesis => {
+                        format!(
+                            "🎯 **Final Synthesis**\n\n\
+                            {}\n\n\
+                            Model: {}\n\n\
+                            📊 **Session Summary:**\n\
+                            • Total Steps: {}\n\
+                            • Reasoning Steps: {}\n\
+                            • Bias Checks: {}\n\
+                            • Corrections Made: {}\n\
+                            • Overall Quality: {:.2}\n\n\
+                            Status: Complete ✅",
+                            response.content,
+                            response.model_used,
+                            response.session_status.total_steps,
+                            response.session_status.reasoning_steps,
+                            response.session_status.bias_checks,
+                            response.session_status.corrections_made,
+                            response.session_status.overall_quality
+                        )
+                    },
+                };
                 
                 Ok(CallToolResult {
                     content: vec![Content::text(formatted_response)],

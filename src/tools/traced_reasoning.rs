@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::collections::HashSet;
 use tracing::{debug, info, error, warn};
 
 use crate::llm::{
@@ -311,10 +312,7 @@ impl TracedReasoningTool {
             let system_prompt = self.build_system_prompt(&request.guardrails);
             let user_prompt = self.build_user_prompt(&request, &context);
             
-            // Call LLM to generate thought content
-            let client = self.get_client_for_model(&model)
-                .context("Failed to get LLM client")?;
-            
+            // Create messages for LLM
             let messages = vec![
                 ChatMessage {
                     role: Role::System,
@@ -326,23 +324,16 @@ impl TracedReasoningTool {
                 },
             ];
             
-            info!("🚀 Sending thought {} to LLM for reasoning", request.thought_number);
-            let start_time = std::time::Instant::now();
+            // Call LLM with fallback logic
+            let (response_content, actual_model) = self.call_llm_with_fallback(
+                &model, 
+                messages, 
+                request.temperature, 
+                request.thought_number
+            ).await?;
             
-            let response = client
-                .complete(messages, Some(request.temperature), Some(2000))
-                .await
-                .map_err(|e| {
-                    let elapsed = start_time.elapsed();
-                    error!("LLM call failed after {:?}: {}", elapsed, e);
-                    anyhow::anyhow!("Failed to generate reasoning thought after {:?}: {}", elapsed, e)
-                })?;
-            
-            let elapsed = start_time.elapsed();
-            info!("✅ Thought {} generated in {:?}", request.thought_number, elapsed);
-            
-            let (step_type, _, _) = self.parse_step_response(&response.content);
-            (response.content, step_type)
+            let (step_type, _, _) = self.parse_step_response(&response_content);
+            (response_content, step_type)
         };
         
         // Calculate metrics for this thought
@@ -855,6 +846,112 @@ impl TracedReasoningTool {
         }).sum::<f32>();
         
         (base_confidence - intervention_penalty).max(0.1).min(1.0)
+    }
+    
+    async fn call_llm_with_fallback(
+        &self, 
+        requested_model: &str,
+        messages: Vec<ChatMessage>,
+        temperature: f32,
+        thought_number: u32,
+    ) -> Result<(String, String)> {
+        info!("🚀 Sending thought {} to LLM for reasoning", thought_number);
+        let start_time = std::time::Instant::now();
+        
+        // Define fallback models
+        let fallback_models = self.get_fallback_models(requested_model);
+        
+        // Try requested model and fallbacks
+        let mut last_error = None;
+        for (attempt, model) in std::iter::once(requested_model.to_string())
+            .chain(fallback_models.iter().cloned())
+            .enumerate() 
+        {
+            if attempt > 0 {
+                info!("🔄 Attempting fallback model: {} (attempt {})", model, attempt + 1);
+            }
+            
+            match self.try_llm_call(&model, messages.clone(), temperature).await {
+                Ok(response) => {
+                    let elapsed = start_time.elapsed();
+                    if attempt > 0 {
+                        info!("✅ Thought {} generated using fallback model {} in {:?}", 
+                            thought_number, model, elapsed);
+                    } else {
+                        info!("✅ Thought {} generated in {:?}", thought_number, elapsed);
+                    }
+                    return Ok((response.content, model));
+                }
+                Err(e) => {
+                    let error_str = e.to_string();
+                    if error_str.contains("does not exist") || 
+                       error_str.contains("do not have access") ||
+                       error_str.contains("model_not_found") {
+                        warn!("❌ Model '{}' not available: {}", model, error_str);
+                        last_error = Some(e);
+                        continue;
+                    } else {
+                        // Non-recoverable error, return immediately
+                        let elapsed = start_time.elapsed();
+                        error!("LLM call failed after {:?}: {}", elapsed, e);
+                        return Err(anyhow::anyhow!("Failed to generate reasoning thought after {:?}: {}", elapsed, e));
+                    }
+                }
+            }
+        }
+        
+        // All models failed
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("All models failed. Requested: {}, tried fallbacks: {:?}", 
+                requested_model, fallback_models)
+        }))
+    }
+    
+    async fn try_llm_call(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        temperature: f32,
+    ) -> Result<crate::llm::client::LLMResponse> {
+        let client = self.get_client_for_model(model)
+            .context("Failed to get LLM client")?;
+        
+        client.complete(messages, Some(temperature), Some(10000)).await
+    }
+    
+    fn get_fallback_models(&self, requested_model: &str) -> Vec<String> {
+        let mut fallbacks = Vec::new();
+        
+        // If a Claude model was requested, try other Claude variants
+        if requested_model.contains("claude") {
+            fallbacks.push("anthropic/claude-3.5-sonnet".to_string());
+            fallbacks.push("anthropic/claude-3-opus".to_string());
+            fallbacks.push("anthropic/claude-3-sonnet".to_string());
+        }
+        
+        // Add default reasoning model as fallback if not already requested
+        if requested_model != self.config.default_reasoning_model {
+            fallbacks.push(self.config.default_reasoning_model.clone());
+        }
+        
+        // Add o3 as fallback for reasoning tasks
+        if !requested_model.starts_with("o3") {
+            fallbacks.push("o3".to_string());
+        }
+        
+        // Add some reliable fallbacks
+        if !requested_model.contains("gpt-4") {
+            fallbacks.push("gpt-4o-mini".to_string());
+        }
+        if !requested_model.contains("gemini") {
+            fallbacks.push("google/gemini-2.5-pro".to_string());
+        }
+        
+        // Remove duplicates while preserving order
+        let mut seen = HashSet::new();
+        fallbacks.retain(|model| seen.insert(model.clone()));
+        
+        fallbacks
     }
     
     fn get_client_for_model(&self, model: &str) -> Result<Arc<dyn LLMClient>> {

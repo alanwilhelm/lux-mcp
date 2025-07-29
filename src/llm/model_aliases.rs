@@ -54,6 +54,12 @@ impl ModelResolver {
         aliases.insert("sonnet-3.5".to_string(), "anthropic/claude-3.5-sonnet".to_string());
         aliases.insert("claude-3.5-sonnet".to_string(), "anthropic/claude-3.5-sonnet".to_string());
         
+        // Claude 3.5 with date suffixes (map to base model)
+        aliases.insert("claude-3-5-sonnet-20241022".to_string(), "anthropic/claude-3.5-sonnet".to_string());
+        aliases.insert("claude-3.5-sonnet-20241022".to_string(), "anthropic/claude-3.5-sonnet".to_string());
+        aliases.insert("claude-3-5-sonnet-latest".to_string(), "anthropic/claude-3.5-sonnet".to_string());
+        aliases.insert("claude-3.5-sonnet-latest".to_string(), "anthropic/claude-3.5-sonnet".to_string());
+        
         // Claude 4 variants (future models)
         aliases.insert("opus-4".to_string(), "anthropic/claude-4-opus".to_string());
         aliases.insert("opus4".to_string(), "anthropic/claude-4-opus".to_string());
@@ -112,6 +118,22 @@ impl ModelResolver {
             return resolved.clone();
         }
         
+        // Try stripping date suffix (e.g., -20241022 or -latest)
+        let without_date = self.strip_date_suffix(input);
+        if without_date != input {
+            if let Some(resolved) = self.aliases.get(&without_date) {
+                return resolved.clone();
+            }
+            // Also try normalized version without date
+            let normalized_without_date = without_date.to_lowercase()
+                .replace('-', "")
+                .replace('_', "")
+                .replace(' ', "");
+            if let Some(resolved) = self.aliases.get(&normalized_without_date) {
+                return resolved.clone();
+            }
+        }
+        
         // Check if it's an OpenRouter model (contains /)
         if input.contains('/') {
             return input.to_string();
@@ -119,6 +141,18 @@ impl ModelResolver {
         
         // Default to the input as-is
         input.to_string()
+    }
+    
+    fn strip_date_suffix(&self, model: &str) -> String {
+        // Remove date suffixes like -20241022 or -latest
+        if let Some(idx) = model.rfind('-') {
+            let suffix = &model[idx + 1..];
+            // Check if suffix is all digits (date) or "latest"
+            if suffix.chars().all(|c| c.is_numeric()) || suffix == "latest" {
+                return model[..idx].to_string();
+            }
+        }
+        model.to_string()
     }
     
     pub fn is_openrouter_model(&self, model: &str) -> bool {

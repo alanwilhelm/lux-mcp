@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, error};
+use std::collections::HashSet;
+use tracing::{debug, info, error, warn};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -12,7 +13,7 @@ use crate::llm::{
     Role,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(default)]
@@ -102,13 +103,89 @@ impl ChatTool {
             request.message, request.model, request.temperature);
         
         // Resolve model alias
-        let model = request.model
+        let requested_model = request.model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
             .unwrap_or_else(|| self.config.default_chat_model.clone());
         
         info!("Resolved model: {} (requested: {:?}, default: {})", 
-            model, request.model, self.config.default_chat_model);
+            requested_model, request.model, self.config.default_chat_model);
+        
+        // Define fallback models in order of preference
+        let fallback_models = self.get_fallback_models(&requested_model);
+        
+        // Try requested model and fallbacks
+        let mut last_error = None;
+        for (attempt, model) in std::iter::once(requested_model.clone())
+            .chain(fallback_models.iter().cloned())
+            .enumerate() 
+        {
+            if attempt > 0 {
+                info!("🔄 Attempting fallback model: {} (attempt {})", model, attempt + 1);
+            }
+            
+            match self.try_chat_with_model(request.clone(), model.clone()).await {
+                Ok(response) => {
+                    if attempt > 0 {
+                        info!("✅ Successfully used fallback model: {}", model);
+                    }
+                    return Ok(response);
+                }
+                Err(e) => {
+                    let error_str = e.to_string();
+                    if error_str.contains("does not exist") || 
+                       error_str.contains("do not have access") ||
+                       error_str.contains("model_not_found") {
+                        warn!("❌ Model '{}' not available: {}", model, error_str);
+                        last_error = Some(e);
+                        continue;
+                    } else {
+                        // Non-recoverable error, return immediately
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        
+        // All models failed
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("All models failed. Requested: {}, tried fallbacks: {:?}", 
+                requested_model, fallback_models)
+        }))
+    }
+    
+    fn get_fallback_models(&self, requested_model: &str) -> Vec<String> {
+        let mut fallbacks = Vec::new();
+        
+        // If a Claude model was requested, try other Claude variants
+        if requested_model.contains("claude") {
+            fallbacks.push("anthropic/claude-3.5-sonnet".to_string());
+            fallbacks.push("anthropic/claude-3-opus".to_string());
+            fallbacks.push("anthropic/claude-3-sonnet".to_string());
+        }
+        
+        // Add default model as fallback if not already requested
+        if requested_model != self.config.default_chat_model {
+            fallbacks.push(self.config.default_chat_model.clone());
+        }
+        
+        // Add some reliable fallbacks
+        if !requested_model.contains("gpt-4") {
+            fallbacks.push("gpt-4o-mini".to_string());
+        }
+        if !requested_model.contains("gemini") {
+            fallbacks.push("google/gemini-2.5-flash".to_string());
+        }
+        
+        // Remove duplicates while preserving order
+        let mut seen = std::collections::HashSet::new();
+        fallbacks.retain(|model| seen.insert(model.clone()));
+        
+        fallbacks
+    }
+    
+    async fn try_chat_with_model(&self, request: ChatRequest, model: String) -> Result<ChatResponse> {
+        debug!("Trying chat with model: {}", model);
         
         // Check API keys
         debug!("OpenAI key available: {}", self.config.openai_api_key.is_some());
