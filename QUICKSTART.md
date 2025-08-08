@@ -1,376 +1,236 @@
-# Lux MCP - Quick Start Guide
+# Lux MCP Quick Start Guide
 
-## 1. Setup (2 minutes)
+## Minimal Setup (No Database Required!)
 
+Lux MCP works perfectly without a database - all core features are available with in-memory storage.
+
+### 1. Prerequisites
+- Rust 1.70+
+- OpenAI API key OR OpenRouter API key
+
+### 2. Build
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/lux-mcp
+git clone https://github.com/yourusername/lux-mcp.git
 cd lux-mcp
-
-# Copy environment config
-cp .env.example .env
-
-# Edit .env and add your API key(s)
-# You need at least ONE of these:
-# - OPENAI_API_KEY=sk-...
-# - OPENROUTER_API_KEY=sk-or-v1-...
-
-# Build the project
 cargo build --release
 ```
 
-## 2. Configure Claude Desktop
+### 3. Configure Environment
 
-Add to your Claude Desktop config:
+#### Option A: OpenAI Only
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+#### Option B: OpenRouter Only
+```bash
+export OPENROUTER_API_KEY="sk-..."
+```
+
+#### Option C: Both (Recommended)
+```bash
+export OPENAI_API_KEY="sk-..."
+export OPENROUTER_API_KEY="sk-..."
+```
+
+### 4. Run
+```bash
+./target/release/lux-mcp
+```
+
+That's it! The server is now running on stdio for MCP communication.
+
+## Claude Desktop Setup
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "lux": {
-      "command": "/path/to/lux-mcp/target/release/lux-mcp",
+      "command": "/absolute/path/to/lux-mcp/target/release/lux-mcp",
       "env": {
-        "RUST_LOG": "info"
+        "OPENAI_API_KEY": "your-openai-key"
       }
     }
   }
 }
 ```
 
-## 3. Test the Chat Tool
+Restart Claude Desktop and you'll see Lux tools available!
 
-In Claude Desktop, try:
+## Test the Server
 
+### Quick Test
+```bash
+# In one terminal
+./target/release/lux-mcp
+
+# In another terminal
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | nc localhost 3333
 ```
-Use the lux_chat tool to ask GPT-4: "What is the capital of France?"
+
+### Test a Tool
+```bash
+cat << 'EOF' | python3 -m json.tool | nc localhost 3333
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "confer",
+    "arguments": {
+      "message": "Hello! What is metacognition?"
+    }
+  }
+}
+EOF
 ```
 
-Or with model aliases:
+## Available Tools
 
+1. **confer** - Chat with any LLM
+   ```json
+   {
+     "tool": "confer",
+     "arguments": {
+       "message": "Your question here"
+     }
+   }
+   ```
+
+2. **traced_reasoning** - Step-by-step reasoning with monitoring
+   ```json
+   {
+     "tool": "traced_reasoning",
+     "arguments": {
+       "thought": "Complex problem to solve",
+       "thought_number": 1,
+       "total_thoughts": 5,
+       "next_thought_needed": true
+     }
+   }
+   ```
+
+3. **biased_reasoning** - Dual-model bias detection
+   ```json
+   {
+     "tool": "biased_reasoning",
+     "arguments": {
+       "query": "Question to analyze for bias"
+     }
+   }
+   ```
+
+4. **planner** - Interactive planning
+   ```json
+   {
+     "tool": "planner",
+     "arguments": {
+       "step": "Task to plan",
+       "step_number": 1,
+       "total_steps": 7,
+       "next_step_required": true
+     }
+   }
+   ```
+
+5. **illumination_status** - Check system status
+   ```json
+   {
+     "tool": "illumination_status",
+     "arguments": {}
+   }
+   ```
+
+## Optional: Model Configuration
+
+### Default Models
+```bash
+# Change default models (optional)
+export LUX_DEFAULT_CHAT_MODEL="gpt-4o"        # for confer
+export LUX_DEFAULT_REASONING_MODEL="o3-pro"   # for traced_reasoning
+export LUX_DEFAULT_BIAS_CHECKER_MODEL="o4-mini" # for bias checking
 ```
-Use lux_chat with model "mini" to explain quantum computing in simple terms
-```
 
-## Model Aliases
+### Supported Models
 
-Super easy model selection:
+#### OpenAI
+- `gpt-4o`, `gpt-4o-mini` - Latest GPT-4
+- `o3`, `o3-pro`, `o3-mini` - Deep reasoning (30s-5min)
+- `o4-mini` - Fast reasoning
+- `gpt-3.5-turbo` - Fast, economical
 
-### OpenAI Models (Primary)
+#### OpenRouter
+- `claude` → Claude 3 Opus
+- `gemini` → Gemini Pro
+- `llama3` → Llama 3 70B
 
-| Alias | Resolves To | Description |
-|-------|-------------|-------------|
-| `gpt4.1`, `4.1` | `gpt-4-turbo-preview` | Latest GPT-4 |
-| `o3` | `o3` | Advanced reasoning |
-| `o3-pro`, `o3pro` | `o3-pro` | Professional reasoning |
-| `o4-mini`, `mini` | `o4-mini` | Fast & efficient |
+## Optional: Database Setup
 
-### OpenRouter Models
-
-| Alias | Resolves To | Description |
-|-------|-------------|-------------|
-| `claude`, `opus` | `claude-3-opus` | Claude 3 Opus |
-| `sonnet` | `claude-3-sonnet` | Claude 3 Sonnet |
-| `llama3` | `meta-llama/llama-3-70b` | Llama 3 70B |
-| `mixtral` | `mistralai/mixtral-8x7b` | Mixtral MoE |
-| `gemini` | `google/gemini-2.5-pro` | Latest Gemini 2.5 Pro |
-| `flash` | `google/gemini-2.5-flash` | Fast Gemini 2.5 |
-| `gemini-free` | `google/gemini-2.0-flash-exp:free` | Free Gemini |
-
-## Environment Variables
+If you want persistence across restarts:
 
 ```bash
-# Required (at least one)
-OPENAI_API_KEY=sk-...
-OPENROUTER_API_KEY=sk-or-v1-...
+# 1. Install PostgreSQL
+brew install postgresql  # macOS
+# or
+sudo apt install postgresql  # Ubuntu
 
-# Optional defaults
-LUX_DEFAULT_CHAT_MODEL=gpt4.1       # for lux_chat
-LUX_DEFAULT_REASONING_MODEL=o3      # for traced_reasoning
-LUX_DEFAULT_BIAS_CHECKER_MODEL=o4-mini # for biased_reasoning
+# 2. Create database
+createdb lux_mcp
+
+# 3. Set environment variable
+export DATABASE_URL="postgresql://localhost/lux_mcp"
+
+# 4. Run migrations
+cargo install sea-orm-cli
+sea-orm-cli migrate up
 ```
 
-## Examples
+## Features Without Database
 
-### Simple Chat
-```json
-{
-  "tool": "lux_chat",
-  "arguments": {
-    "message": "Explain recursion",
-    "model": "gpt4.1"
-  }
-}
-```
+✅ All tools work perfectly
+✅ Conversation threading (3-hour memory)
+✅ Metacognitive monitoring
+✅ Quality tracking
+✅ Session management (30-minute sessions)
 
-### With Temperature
-```json
-{
-  "tool": "lux_chat",
-  "arguments": {
-    "message": "Write a creative story",
-    "model": "claude",
-    "temperature": 0.9
-  }
-}
-```
+## Features With Database
 
-### OpenRouter Models
-```json
-{
-  "tool": "lux_chat",
-  "arguments": {
-    "message": "Analyze this code",
-    "model": "deepseek/deepseek-coder"
-  }
-}
-```
+All of the above, plus:
+✅ Persistent conversation history
+✅ Thread checkpointing (survive restarts)
+✅ Long-term analytics
+✅ Cross-session insights
 
 ## Troubleshooting
 
-### No API Keys Error
-```
-Error: No API keys configured
-```
-→ Set `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in `.env`
+### "Model not found"
+- Check your API key is set correctly
+- Verify the model name or use an alias
+- Some models require specific API access
 
-### Model Not Found
-```
-Error: Invalid model
-```
-→ Check model name or use an alias from the table above
+### Empty responses from O4
+- O4 models need high token limits
+- Already configured by default (10,000 tokens)
 
-### Timeout
-```
-Error: Request timeout
-```
-→ Increase `LUX_REQUEST_TIMEOUT_SECS=60` in `.env`
+### Slow O3 responses
+- Normal - O3 does deep reasoning
+- Expect 30 seconds to 5 minutes
 
-## Traced Reasoning Tool
-
-The `traced_reasoning` tool provides advanced chain-of-thought reasoning with multi-metric monitoring based on cutting-edge research:
-
-### Basic Usage
-```json
-{
-  "tool": "traced_reasoning",
-  "arguments": {
-    "query": "What are the ethical implications of AI?",
-    "model": "gpt4.1"
-  }
-}
-```
-
-### With Custom Configuration
-```json
-{
-  "tool": "traced_reasoning",
-  "arguments": {
-    "query": "Explain quantum entanglement",
-    "model": "o3",
-    "max_steps": 8,
-    "temperature": 0.6,
-    "guardrails": {
-      "semantic_drift_check": true,
-      "perplexity_monitoring": true,
-      "circular_reasoning_detection": true
-    }
-  }
-}
-```
-
-### Features
-- **Multi-metric Monitoring**: Tracks semantic drift, perplexity, attention entropy
-- **Real-time Interventions**: Detects and corrects reasoning issues
-- **Structured Output**: Clear reasoning steps with confidence scores
-- **Guardrails**: Prevents circular reasoning, hallucinations, and quality degradation
-
-### Example Output
-The tool provides:
-- Final answer with confidence score
-- Step-by-step reasoning trace
-- Metrics for each step (semantic similarity, perplexity, etc.)
-- Any interventions triggered during reasoning
-- Overall reasoning quality assessment
-
-## Biased Reasoning Tool
-
-The `biased_reasoning` tool provides dual-model reasoning where each step is verified for bias and reasoning errors.
-
-**Important**: This tool ALWAYS uses the configured default models:
-- **Primary Reasoning**: Uses `LUX_DEFAULT_REASONING_MODEL` (default: o3-pro)
-- **Bias Verification**: Uses `LUX_DEFAULT_BIAS_CHECKER_MODEL` (default: o4-mini)
-
-### Basic Usage
-```json
-{
-  "tool": "biased_reasoning",
-  "arguments": {
-    "query": "Is nuclear energy the best solution for climate change?",
-    "max_steps": 5
-  }
-}
-```
-
-### Configuration Options
-```json
-{
-  "tool": "biased_reasoning",
-  "arguments": {
-    "query": "What are the pros and cons of cryptocurrency?",
-    "max_steps": 6,
-    "temperature": 0.7
-  }
-}
-```
-
-### With Bias Configuration
-```json
-{
-  "tool": "biased_reasoning",
-  "arguments": {
-    "query": "Why is my approach the best solution?",
-    "bias_config": {
-      "check_confirmation_bias": true,
-      "check_anchoring_bias": true,
-      "check_availability_bias": true,
-      "check_reasoning_errors": true,
-      "bias_threshold": 0.6
-    }
-  }
-}
-```
-
-### Features
-- **Dual-Model Architecture**: Primary model reasons, verifier checks each step
-- **Real-time Bias Detection**: Identifies confirmation bias, anchoring, and more
-- **Step Correction**: Generates corrected thoughts for biased reasoning
-- **Quality Metrics**: Tracks step quality and overall reasoning assessment
-- **Configurable Models**: Use any combination of OpenAI/OpenRouter models
-
-### Example Output
-The tool provides:
-- Final answer with dual-model verification
-- Step-by-step reasoning with bias annotations
-- Corrected thoughts when bias is detected
-- Quality score for each step
-- Overall assessment with most common biases
-- Models used for transparency
-
-### Default Models
-- **Primary Reasoning**: Uses `LUX_DEFAULT_REASONING_MODEL` (default: o3)
-- **Bias Verification**: Uses `LUX_DEFAULT_BIAS_CHECKER_MODEL` (default: o4-mini)
-
-Override these via environment variables or request parameters.
-
-## Interactive Planner Tool
-
-The `planner` tool provides interactive sequential planning with step-by-step building, branching, and revision capabilities:
-
-### Basic Usage - Step 1
-```json
-{
-  "tool": "planner",
-  "arguments": {
-    "step": "Design a scalable e-commerce platform with microservices architecture",
-    "step_number": 1,
-    "total_steps": 7,
-    "next_step_required": true
-  }
-}
-```
-
-### Continue Planning - Step 2
-```json
-{
-  "tool": "planner",
-  "arguments": {
-    "step": "Identify service boundaries based on business domains and data ownership",
-    "step_number": 2,
-    "total_steps": 7,
-    "next_step_required": true
-  }
-}
-```
-
-### Branch to Explore Alternatives
-```json
-{
-  "tool": "planner",
-  "arguments": {
-    "step": "BRANCH: Explore event-driven architecture instead of REST APIs",
-    "step_number": 3,
-    "total_steps": 7,
-    "next_step_required": true,
-    "is_branch_point": true,
-    "branch_from_step": 2,
-    "branch_id": "event-driven-approach"
-  }
-}
-```
-
-### Revise Earlier Steps
-```json
-{
-  "tool": "planner",
-  "arguments": {
-    "step": "REVISION: Reconsider service boundaries to minimize inter-service communication",
-    "step_number": 4,
-    "total_steps": 7,
-    "next_step_required": true,
-    "is_step_revision": true,
-    "revises_step_number": 2
-  }
-}
-```
-
-### Complete Planning
-```json
-{
-  "tool": "planner",
-  "arguments": {
-    "step": "Finalize deployment strategy with CI/CD pipelines and monitoring",
-    "step_number": 7,
-    "total_steps": 7,
-    "next_step_required": false
-  }
-}
-```
-
-### Features
-- **Interactive Planning**: Build plans step-by-step with full context awareness
-- **Deep Thinking Pauses**: For complex plans (≥5 steps), enforces reflection in early steps
-- **Branching**: Explore alternative approaches while maintaining the main path
-- **Revisions**: Update earlier steps based on new insights
-- **Dynamic Adjustment**: Adjust total steps as understanding evolves
-- **State Persistence**: Maintains planning history throughout the session
-- **Metacognitive Monitoring**: Detects circular reasoning and quality issues
-
-### Deep Thinking Mode
-For plans with 5+ steps, the first 3 steps trigger mandatory deep thinking pauses:
-- Step 1: Analyze scope, approaches, constraints, and success criteria
-- Step 2: Evaluate approach, identify phases, dependencies, and resources
-- Step 3: Validate completeness, check gaps, plan adaptation strategies
-
-### Example Planning Session
-1. Start with problem description (step 1)
-2. Continue with analysis and decomposition
-3. Branch to explore alternatives
-4. Revise based on new insights
-5. Complete with actionable plan
-
-The final output includes:
-- Complete planning journey with all steps
-- Branches explored with their outcomes
-- Revisions made and reasoning
-- Structured, actionable plan ready for implementation
+### Can't connect to server
+- Ensure the server is running
+- Check no other process is using port 3333
+- Try `lsof -i :3333` to check
 
 ## Next Steps
 
-- Try different models with `lux_chat`
-- Explore `traced_reasoning` for complex problem solving
-- Use `biased_reasoning` for dual-model verification and bias detection
-- Use `planner` for interactive step-by-step planning with branching
+1. Read [API_REFERENCE.md](API_REFERENCE.md) for detailed documentation
+2. Try the example scripts in `_archive/test-scripts/`
+3. Explore threading with `continuation_id`
+4. Experiment with different models
+5. Join our Discord for support!
 
-## Support
+---
 
-- Issues: https://github.com/yourusername/lux-mcp/issues
-- Docs: See README.md for full documentation
+**Remember**: Database is completely optional! Lux MCP is designed to work great without any external dependencies.

@@ -1,86 +1,56 @@
-# Lux MCP
+# Lux MCP - Metacognitive Model Context Protocol Server
 
-A Model Context Protocol (MCP) server built in Rust that implements metacognitive monitoring for AI reasoning. It detects and prevents overthinking spirals, circular reasoning, and distractor fixation.
+[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![MCP](https://img.shields.io/badge/MCP-1.0-blue?style=for-the-badge)](https://modelcontextprotocol.io/)
+[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 
-**⚠️ Important**: This is an MCP server designed to be used with Claude Desktop or other MCP-compatible clients. It cannot be tested directly via command line. See [USAGE_GUIDE.md](USAGE_GUIDE.md) for details.
+Lux MCP is a Model Context Protocol server that "illuminates" AI reasoning by providing metacognitive monitoring, conversation threading, and quality tracking for LLM interactions.
 
-## Overview
+## 🌟 Key Features
 
-Lux MCP provides four specialized tools for enhanced AI reasoning:
+- **🧠 Metacognitive Monitoring** - Detects and prevents circular reasoning, distractor fixation, and quality degradation
+- **🧵 Conversation Threading** - Maintains context across tool calls with Zen-style threading
+- **🔍 Bias Detection** - Dual-model reasoning with step-by-step bias analysis
+- **📊 Quality Metrics** - Tracks confidence, clarity, and coherence with trend analysis
+- **💾 Hybrid Storage** - In-memory performance with optional database persistence
+- **🚀 O3/O4 Support** - Full support for OpenAI's latest reasoning models
 
-- **confer**: Simple conversational AI with model selection
-- **traced_reasoning**: Step-by-step reasoning with metacognitive monitoring
-- **biased_reasoning**: Dual-model reasoning with bias detection and correction
-- **plan**: Create structured plans with metacognitive monitoring
-
-## Features
-
-### Session Management
-- **Conversation Isolation**: Each conversation gets its own metacognitive monitor
-- **Automatic Cleanup**: Sessions are cleaned up every 5 minutes
-- **Session Continuity**: Optional `session_id` parameter for maintaining context
-- **30-minute TTL**: Sessions expire after 30 minutes of inactivity
-
-### Metacognitive Monitoring
-- **Circular Reasoning Detection**: Identifies when thoughts repeat (>85% similarity)
-- **Distractor Fixation**: Detects drift from original query (<30% relevance)
-- **Quality Tracking**: Monitors reasoning quality trends over time
-
-### Model Support
-- **OpenAI Models**: GPT-4, GPT-4 Turbo, O3, O4-mini
-- **OpenRouter Models**: Claude, Gemini, and many others
-- **Model Aliases**: Convenient shortcuts (e.g., "claude" → "anthropic/claude-4-sonnet")
-
-## Installation
+## 📦 Installation
 
 ### Prerequisites
-- Rust 1.70+ (for stable async support)
-- API keys for OpenAI and/or OpenRouter
+- Rust 1.70+ 
+- OpenAI API key and/or OpenRouter API key
+- PostgreSQL (optional, for persistence)
 
-### Building
-
+### Build from Source
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/lux-mcp.git
 cd lux-mcp
-
-# Build the project
 cargo build --release
 ```
 
 ### Environment Setup
-
-Create a `.env` file or set environment variables:
-
 ```bash
-# At least one API key is required
-OPENAI_API_KEY=your-openai-key
-OPENROUTER_API_KEY=your-openrouter-key
+# Required (at least one)
+export OPENAI_API_KEY="sk-..."
+export OPENROUTER_API_KEY="sk-..."
 
 # Optional defaults
-LUX_DEFAULT_CHAT_MODEL=gpt4.1              # Default: gpt4.1
-LUX_DEFAULT_REASONING_MODEL=o3             # Default: o3
-LUX_DEFAULT_BIAS_CHECKER_MODEL=o4-mini     # Default: o4-mini
+export LUX_DEFAULT_CHAT_MODEL="gpt-4o"
+export LUX_DEFAULT_REASONING_MODEL="o3-pro"
+export LUX_DEFAULT_BIAS_CHECKER_MODEL="o4-mini"
+
+# Optional database
+export DATABASE_URL="postgresql://user:pass@localhost/lux_mcp"
+
+# Logging
+export RUST_LOG="info"
 ```
 
-## Usage
+## 🚀 Quick Start
 
-### Running the Server
-
-```bash
-# Run with cargo
-cargo run --release
-
-# Or run the binary directly
-./target/release/lux-mcp
-
-# With specific log level
-RUST_LOG=debug cargo run --release
-```
-
-### Claude Desktop Integration
-
-Add to your Claude Desktop configuration (`claude_desktop_config.json`):
+### Claude Desktop Configuration
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -89,7 +59,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
       "command": "/path/to/lux-mcp/target/release/lux-mcp",
       "env": {
         "OPENAI_API_KEY": "your-key",
-        "OPENROUTER_API_KEY": "your-key",
+        "LUX_DEFAULT_REASONING_MODEL": "o3-pro",
         "RUST_LOG": "info"
       }
     }
@@ -97,207 +67,273 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 }
 ```
 
-### Troubleshooting
+### Direct Usage
+```bash
+# Start the server
+./target/release/lux-mcp
 
-If you encounter issues, especially "MCP error -32603: Chat error: Failed to complete chat request":
+# In another terminal, send MCP requests
+echo '{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "confer",
+    "arguments": {
+      "message": "Hello! What is metacognition?"
+    }
+  },
+  "id": 1
+}' | nc localhost 3333
+```
 
-1. **Enable debug logging** by setting `RUST_LOG=debug` in your environment
-2. **Check the TROUBLESHOOTING.md** file for detailed debugging steps
-3. **Test your API keys** using the provided test scripts:
-   ```bash
-   ./test_openai_direct.sh  # Test OpenAI API directly
-   ./test_mcp_debug.sh     # Test MCP server with debug logging
-   ```
+## 🛠️ Available Tools
 
-The server now includes comprehensive logging in all critical components to help diagnose connection issues.
-
-## Tools
-
-### confer
-
-Simple conversational AI with model selection.
-
+### `confer` - Conversational AI
+Simple chat with model selection and threading support.
 ```json
 {
   "tool": "confer",
   "arguments": {
-    "message": "Explain quantum computing",
-    "model": "claude",  // optional, defaults to LUX_DEFAULT_CHAT_MODEL
-    "session_id": "optional-session-id"
+    "message": "Your message here",
+    "model": "gpt-4o",
+    "continuation_id": "thread-123"
   }
 }
 ```
 
-### traced_reasoning
-
-Step-by-step reasoning with real-time metacognitive monitoring.
-
+### `traced_reasoning` - Step-by-Step Reasoning
+Metacognitive reasoning with monitoring and synthesis.
 ```json
 {
   "tool": "traced_reasoning",
   "arguments": {
-    "query": "Design a distributed cache system",
-    "model": "o3",  // optional
-    "max_steps": 10,  // optional, default: 10
-    "temperature": 0.7,  // optional, default: 0.7
-    "session_id": "optional-session-id",
-    "guardrails": {  // optional
-      "semantic_drift_check": true,
-      "circular_reasoning_detection": true,
-      "perplexity_monitoring": true
-    }
+    "thought": "How can we optimize database queries?",
+    "thought_number": 1,
+    "total_thoughts": 5,
+    "next_thought_needed": true
   }
 }
 ```
 
-Response includes:
-- Final answer
-- Step-by-step reasoning trace
-- Metrics (confidence, coherence, quality)
-- Interventions (if any issues detected)
-
-### biased_reasoning
-
-Dual-model reasoning where a second model checks for biases.
-
-**Note**: This tool ALWAYS uses the configured default models regardless of parameters:
-- Primary reasoner: `LUX_DEFAULT_REASONING_MODEL` (default: o3-pro)
-- Bias checker: `LUX_DEFAULT_BIAS_CHECKER_MODEL` (default: o4-mini)
-
+### `biased_reasoning` - Bias Detection
+Dual-model reasoning with bias analysis.
 ```json
 {
   "tool": "biased_reasoning",
   "arguments": {
-    "query": "Should we adopt this new technology?",
-    "max_steps": 10,  // optional
-    "session_id": "optional-session-id",
-    "bias_config": {  // optional
-      "check_confirmation_bias": true,
-      "check_anchoring_bias": true,
-      "bias_threshold": 0.7
-    }
+    "query": "What programming language should I learn?",
+    "max_analysis_rounds": 3
   }
 }
 ```
 
-Response includes:
-- Final answer
-- Verified reasoning steps
-- Bias analysis for each step
-- Overall quality assessment
-
-### plan
-
-Create structured plans with metacognitive monitoring.
-
+### `planner` - Interactive Planning
+LLM-powered sequential planning.
 ```json
 {
-  "tool": "plan",
+  "tool": "planner",
   "arguments": {
-    "goal": "Build a scalable e-commerce platform",
-    "model": "o3-pro",  // optional, defaults to reasoning model
-    "max_steps": 5,  // optional, default: 5
-    "temperature": 0.7,  // optional, default: 0.7
-    "session_id": "optional-session-id"
+    "step": "Design a microservices architecture",
+    "step_number": 1,
+    "total_steps": 7,
+    "next_step_required": true
   }
 }
 ```
 
-Response includes:
-- Complete plan text
-- Structured steps with dependencies
-- Monitoring feedback (if issues detected)
-- Model used for planning
+### `illumination_status` - System Status
+Check metacognitive monitoring status.
+```json
+{
+  "tool": "illumination_status",
+  "arguments": {}
+}
+```
 
-## Model Aliases
+## 🏗️ Architecture
 
-Convenient shortcuts for common models:
+```
+lux-mcp/
+├── src/
+│   ├── main.rs              # Entry point
+│   ├── server/              # MCP server implementation
+│   │   ├── mod.rs          # Server struct
+│   │   └── handler.rs      # Request handlers
+│   ├── tools/              # Tool implementations
+│   │   ├── chat.rs         # Confer tool
+│   │   ├── traced_reasoning.rs
+│   │   ├── biased_reasoning.rs
+│   │   └── planner.rs
+│   ├── threading/          # Conversation threading
+│   │   ├── manager.rs      # Thread management
+│   │   ├── context.rs      # Thread context
+│   │   ├── synthesis.rs    # Synthesis integration
+│   │   ├── quality.rs      # Quality metrics
+│   │   └── persistence.rs  # Database checkpoints
+│   ├── monitoring/         # Metacognitive monitoring
+│   │   ├── circular_reasoning.rs
+│   │   ├── distractor_fixation.rs
+│   │   └── quality_degradation.rs
+│   ├── llm/               # LLM integrations
+│   │   ├── client.rs      # Unified interface
+│   │   ├── openai.rs      # OpenAI/O3/O4 support
+│   │   └── openrouter.rs  # OpenRouter support
+│   └── db/                # Database layer
+│       ├── connection.rs
+│       └── service.rs
+├── crates/
+│   ├── lux_synthesis/     # Synthesis engine
+│   └── lux_synthesis_db/  # Database bindings
+└── migrations/            # Database schema
+```
 
-### OpenAI/Direct Models
-- `gpt4`, `4` → `gpt-4`
-- `gpt4.1`, `4.1` → `gpt-4-turbo-preview`
-- `mini` → `gpt-4o-mini`
-- `o3` → `o3`
-- `o3-pro` → `o3-pro`
-- `o4-mini`, `o4mini` → `o4-mini`
+## 🧠 How It Works
+
+### Metacognitive Monitoring
+Lux monitors reasoning in real-time to detect:
+- **Circular Reasoning**: Semantic similarity > 85% for 3+ consecutive thoughts
+- **Distractor Fixation**: Relevance < 30% to original query
+- **Quality Degradation**: Quality drop > 40% from baseline
+
+### Threading System
+- Conversations persist across tool calls via `continuation_id`
+- Threads expire after 3 hours (configurable)
+- Context intelligently reconstructed within token limits
+- Quality metrics tracked per thread
+
+### Synthesis Integration
+- Tracks insights and actions across reasoning sessions
+- Links synthesis states to conversation threads
+- Builds knowledge graph of related concepts
+
+## 📊 Supported Models
+
+### OpenAI Models
+- **GPT-5**: `gpt-5` (coming August 2025 - pre-configured support)
+- **O3 Series**: `o3`, `o3-pro`, `o3-mini` (deep reasoning, 30s-5min response)
+- **O4 Series**: `o4-mini` (fast reasoning with special handling)
+- **GPT-4**: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo-preview`
+- **GPT-3.5**: `gpt-3.5-turbo`
 
 ### OpenRouter Models
-- `claude` → `anthropic/claude-4-sonnet`
-- `opus` → `anthropic/claude-4-opus`
-- `sonnet` → `anthropic/claude-3-sonnet`
-- `gemini` → `google/gemini-2.5-pro`
-- `flash` → `google/gemini-2.5-flash`
-- `llama3` → `meta-llama/llama-3-70b-instruct`
+- **Claude**: `anthropic/claude-3-opus`
+- **Gemini**: `google/gemini-2.5-pro`
+- **Llama**: `meta-llama/llama-3-70b`
 
-## Current Limitations
+### Model Aliases
+```
+"gpt5" → "gpt-5" (available August 2025)
+"gpt4.1" → "gpt-4-turbo-preview"
+"claude" → "anthropic/claude-3-opus"
+"gemini" → "google/gemini-2.5-pro"
+"o3-pro" → "o3-pro-2025-06-10"
+```
 
-### Placeholder Implementations
-Some monitoring features are currently placeholders:
-- **Perplexity monitoring**: Returns mock values
-- **Attention entropy**: Not yet implemented
-- **Semantic similarity**: Uses basic word overlap
+## 🔧 Configuration
 
-### Production Readiness
-- Basic monitoring is functional
-- Session management is fully implemented
-- Tool interfaces are stable
-- Advanced monitoring algorithms are still in development
+### Environment Variables
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key | Required* |
+| `OPENROUTER_API_KEY` | OpenRouter API key | Required* |
+| `LUX_DEFAULT_CHAT_MODEL` | Default for confer | `gpt-4o` |
+| `LUX_DEFAULT_REASONING_MODEL` | Default for traced_reasoning | `o3-pro` |
+| `LUX_DEFAULT_BIAS_CHECKER_MODEL` | Default for biased_reasoning | `o4-mini` |
+| `DATABASE_URL` | PostgreSQL connection | Optional |
+| `RUST_LOG` | Log level | `info` |
 
-## Testing
+*At least one API key required
 
+### Database Setup (Optional)
 ```bash
-# Run all tests
+# Install SeaORM CLI
+cargo install sea-orm-cli
+
+# Run migrations
+DATABASE_URL="postgresql://localhost/lux_mcp" sea-orm-cli migrate up
+
+# Or use the setup script
+./setup_database.sh
+```
+
+## 📖 Documentation
+
+- [API Reference](API_REFERENCE.md) - Complete tool documentation
+- [Configuration Guide](CONFIGURATION.md) - Detailed setup instructions
+- [Design Document](DESIGN.md) - Architecture and design decisions
+- [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
+
+## 🧪 Development Tools
+
+### Quick Commands
+```bash
+# Run all quality checks
+make check
+# or
+./check.sh
+
+# Auto-fix issues
+make fix
+
+# Run CI checks
+make ci
+
+# Show configuration
+make config
+```
+
+### Available Make Commands
+```bash
+make build    # Build debug version
+make release  # Build release version
+make check    # Run quality checks (fmt, clippy, test)
+make fmt      # Format code
+make clippy   # Run clippy lints
+make test     # Run tests
+make clean    # Clean build artifacts
+make run      # Build and run server
+make install  # Install to ~/.cargo/bin
+```
+
+### Testing
+```bash
+# Run unit tests
 cargo test
 
-# Test MCP server functionality
-./test_server.sh
+# Run integration tests
+./test_threading_complete.sh
 
-# Test individual tools
-./test_chat.sh
-./test_traced_reasoning.sh
-./test_biased_reasoning.sh
-./test_plan.sh
+# Test specific tool
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | nc localhost 3333
 ```
 
-## Architecture
+## 🤝 Contributing
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       MCP Server                             │
-├─────────────────────────────────────────────────────────────┤
-│                    Session Manager                           │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
-│  │  Session 1  │  │  Session 2  │  │  Session N  │ ...      │
-│  │  Monitor 1  │  │  Monitor 2  │  │  Monitor N  │          │
-│  └────────────┘  └────────────┘  └────────────┘            │
-├─────────────────────────────────────────────────────────────┤
-│                        Tools                                 │
-│  ┌────────────┐  ┌──────────────┐  ┌──────────────┐        │
-│  │   confer    │  │    traced     │  │    biased     │      │
-│  │            │  │  reasoning    │  │  reasoning    │      │
-│  └────────────┘  └──────────────┘  └──────────────┘        │
-├─────────────────────────────────────────────────────────────┤
-│                     LLM Clients                              │
-│  ┌────────────┐  ┌──────────────┐                          │
-│  │   OpenAI   │  │  OpenRouter   │                          │
-│  └────────────┘  └──────────────┘                          │
-└─────────────────────────────────────────────────────────────┘
-```
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
 
-## Contributing
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-We welcome contributions! Areas of interest:
-- Implementing real semantic similarity algorithms
-- Adding perplexity and attention entropy monitoring
-- Improving circular reasoning detection
-- Performance optimizations
+## 📄 License
 
-## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-MIT License - see LICENSE file for details
+## 🙏 Acknowledgments
 
-## Acknowledgments
+- [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic
+- [zen-mcp](https://github.com/theluk/zen-mcp) for threading inspiration
+- OpenAI for O3/O4 reasoning models
+- The Rust community for excellent libraries
 
-- NIRVANA project for metacognitive insights
-- MCP specification by Anthropic
-- Rust async ecosystem
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/yourusername/lux-mcp/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/lux-mcp/discussions)
+- **Email**: support@example.com
+
+---
+
+**Lux MCP** - Illuminating the path to better AI reasoning 🔦

@@ -1,0 +1,221 @@
+# cargo-make configuration for Lux MCP
+# Install: cargo install cargo-make
+# Usage: cargo make <task>
+
+[config]
+default_to_workspace = false
+skip_core_tasks = false
+
+[env]
+RUST_LOG = "info"
+
+# Default task
+[tasks.default]
+alias = "help"
+
+[tasks.help]
+description = "Show available commands"
+script = """
+echo "Lux MCP - cargo make tasks"
+echo "=========================="
+echo "  cargo make build    - Build debug version"
+echo "  cargo make release  - Build release version"
+echo "  cargo make check    - Run quality checks"
+echo "  cargo make fmt      - Format code"
+echo "  cargo make clippy   - Run clippy lints"
+echo "  cargo make test     - Run tests"
+echo "  cargo make clean    - Clean artifacts"
+echo "  cargo make run      - Run the server"
+echo "  cargo make fix      - Auto-fix issues"
+echo "  cargo make ci       - Run CI checks"
+"""
+
+# Build tasks
+[tasks.build]
+description = "Build debug version"
+command = "cargo"
+args = ["build"]
+
+[tasks.release]
+description = "Build release version"
+command = "cargo"
+args = ["build", "--release"]
+
+# Quality checks
+[tasks.check]
+description = "Run all quality checks"
+dependencies = ["fmt-check", "clippy", "test-compile"]
+
+[tasks.fmt]
+description = "Format code"
+command = "cargo"
+args = ["fmt"]
+
+[tasks.fmt-check]
+description = "Check formatting"
+command = "cargo"
+args = ["fmt", "--", "--check"]
+
+[tasks.clippy]
+description = "Run clippy lints"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features"]
+
+[tasks.clippy-strict]
+description = "Run clippy with warnings as errors"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+# Testing
+[tasks.test]
+description = "Run tests"
+command = "cargo"
+args = ["test"]
+
+[tasks.test-compile]
+description = "Compile tests without running"
+command = "cargo"
+args = ["test", "--no-run"]
+
+[tasks.test-verbose]
+description = "Run tests with output"
+command = "cargo"
+args = ["test", "--", "--nocapture"]
+
+# Cleanup
+[tasks.clean]
+description = "Clean build artifacts"
+script = """
+cargo clean
+rm -f test_threading_*.log
+rm -f *.log
+echo "✓ Cleaned build artifacts and logs"
+"""
+
+# Run server
+[tasks.run]
+description = "Run the server"
+command = "cargo"
+args = ["run"]
+dependencies = ["build"]
+
+[tasks.run-release]
+description = "Run release build"
+command = "./target/release/lux-mcp"
+dependencies = ["release"]
+
+[tasks.dev]
+description = "Run with debug logging"
+env = { "RUST_LOG" = "debug" }
+command = "cargo"
+args = ["run"]
+
+# Fix issues
+[tasks.fix]
+description = "Auto-fix formatting and clippy issues"
+script = """
+cargo fmt
+cargo fix --allow-dirty --allow-staged
+cargo clippy --fix --allow-dirty --allow-staged
+echo "✓ Auto-fix complete"
+"""
+
+# CI pipeline
+[tasks.ci]
+description = "Run full CI checks"
+dependencies = [
+    "fmt-check",
+    "build",
+    "clippy-strict",
+    "test",
+    "doc-check"
+]
+
+[tasks.ci-quick]
+description = "Quick CI checks"
+dependencies = ["fmt", "build", "test"]
+
+# Documentation
+[tasks.doc]
+description = "Generate documentation"
+command = "cargo"
+args = ["doc", "--no-deps", "--open"]
+
+[tasks.doc-check]
+description = "Check documentation"
+command = "cargo"
+args = ["doc", "--no-deps", "--quiet"]
+
+# Installation
+[tasks.install]
+description = "Install to ~/.cargo/bin"
+script = """
+cargo build --release
+cp target/release/lux-mcp ~/.cargo/bin/
+echo "✓ Installed to ~/.cargo/bin/lux-mcp"
+"""
+
+# Configuration check
+[tasks.config]
+description = "Show current configuration"
+script = """
+echo "Configuration Status:"
+echo "===================="
+if [ -n "$OPENAI_API_KEY" ]; then
+    echo "✓ OPENAI_API_KEY set"
+else
+    echo "✗ OPENAI_API_KEY not set"
+fi
+
+if [ -n "$OPENROUTER_API_KEY" ]; then
+    echo "✓ OPENROUTER_API_KEY set"
+else
+    echo "✗ OPENROUTER_API_KEY not set"
+fi
+
+if [ -n "$DATABASE_URL" ]; then
+    echo "✓ DATABASE_URL set (persistence enabled)"
+else
+    echo "ℹ DATABASE_URL not set (in-memory mode)"
+fi
+
+echo ""
+echo "Log level: ${RUST_LOG:-info}"
+echo "Chat model: ${LUX_DEFAULT_CHAT_MODEL:-gpt-4o}"
+echo "Reasoning model: ${LUX_DEFAULT_REASONING_MODEL:-o3-pro}"
+echo "Bias checker: ${LUX_DEFAULT_BIAS_CHECKER_MODEL:-o4-mini}"
+"""
+
+# Benchmarks
+[tasks.bench]
+description = "Run benchmarks"
+command = "cargo"
+args = ["bench"]
+
+# Security audit
+[tasks.audit]
+description = "Security audit of dependencies"
+install_crate = "cargo-audit"
+command = "cargo"
+args = ["audit"]
+
+# Check for outdated dependencies
+[tasks.outdated]
+description = "Check for outdated dependencies"
+install_crate = "cargo-outdated"
+command = "cargo"
+args = ["outdated"]
+
+# Watch for changes and rebuild
+[tasks.watch]
+description = "Watch for changes and rebuild"
+install_crate = "cargo-watch"
+command = "cargo"
+args = ["watch", "-x", "build"]
+
+# Threading test
+[tasks.test-threading]
+description = "Test threading system"
+script = """
+./test_threading_complete.sh || echo "Test script not found"
+"""

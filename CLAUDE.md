@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Allowed Directories
+- /tmp
+- /Users/alan/Projects/_MCP/nirvana/lux-mcp
+
 ## Important Notes
 
 - Tool names must match pattern `^[a-zA-Z0-9_-]{1,128}$` (no colons allowed)

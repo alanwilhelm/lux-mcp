@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::collections::HashSet;
-use tracing::{debug, info, error, warn};
+use std::sync::{Arc, Mutex as StdMutex};
+use tracing::{debug, error, info, warn};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -13,14 +13,18 @@ use crate::llm::{
     Role,
 };
 use crate::session::SessionManager;
+use lux_synthesis::{
+    events::{ActionItem, InsightEntry, Priority},
+    EvolvingSynthesis, SynthesisEngine, SynthesisSink,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TracedReasoningRequest {
-    pub thought: String,  // For thought 1: the query, for 2+: guidance/previous thought
+    pub thought: String, // For thought 1: the query, for 2+: guidance/previous thought
     pub thought_number: u32,
     pub total_thoughts: u32,
     pub next_thought_needed: bool,
-    
+
     #[serde(default)]
     pub is_revision: bool,
     #[serde(default)]
@@ -31,9 +35,11 @@ pub struct TracedReasoningRequest {
     pub branch_id: Option<String>,
     #[serde(default)]
     pub needs_more_thoughts: bool,
-    
+
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub continuation_id: Option<String>, // Thread continuation support
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default = "default_temperature")]
@@ -42,7 +48,19 @@ pub struct TracedReasoningRequest {
     pub guardrails: GuardrailConfig,
 }
 
-fn default_temperature() -> f32 { 0.7 }
+fn default_temperature() -> f32 {
+    0.7
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SynthesisSnapshot {
+    pub current_understanding: String,
+    pub key_insights: Vec<String>,
+    pub next_actions: Vec<String>,
+    pub confidence_level: String,
+    pub clarity_level: String,
+    pub ready_for_conclusion: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GuardrailConfig {
@@ -62,9 +80,15 @@ pub struct GuardrailConfig {
     pub attention_entropy_analysis: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_semantic_drift_threshold() -> f32 { 0.3 }
-fn default_perplexity_threshold() -> f32 { 50.0 }
+fn default_true() -> bool {
+    true
+}
+fn default_semantic_drift_threshold() -> f32 {
+    0.3
+}
+fn default_perplexity_threshold() -> f32 {
+    50.0
+}
 
 impl Default for GuardrailConfig {
     fn default() -> Self {
@@ -82,7 +106,7 @@ impl Default for GuardrailConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TracedReasoningResponse {
-    pub status: String,  // "thinking", "intervention_needed", "conclusion_reached"
+    pub status: String, // "thinking", "intervention_needed", "conclusion_reached"
     pub thought_number: u32,
     pub total_thoughts: u32,
     pub next_thought_needed: bool,
@@ -90,7 +114,7 @@ pub struct TracedReasoningResponse {
     pub thought_type: StepType,
     pub metrics: StepMetrics,
     pub metadata: TracedReasoningMetadata,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continuation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +129,8 @@ pub struct TracedReasoningResponse {
     pub overall_metrics: Option<ReasoningMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_used: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthesis_snapshot: Option<SynthesisSnapshot>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -137,6 +163,19 @@ pub enum StepType {
     Synthesis,
     Validation,
     Conclusion,
+}
+
+impl std::fmt::Display for StepType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StepType::Initial => write!(f, "🌟 Initial"),
+            StepType::Exploration => write!(f, "🔭 Exploration"),
+            StepType::Analysis => write!(f, "🔬 Analysis"),
+            StepType::Synthesis => write!(f, "🧩 Synthesis"),
+            StepType::Validation => write!(f, "✅ Validation"),
+            StepType::Conclusion => write!(f, "🎯 Conclusion"),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -206,12 +245,14 @@ pub struct TracedReasoningTool {
     interventions: Vec<Intervention>,
     branches: std::collections::HashMap<String, Vec<ThoughtData>>,
     original_query: Option<String>,
+    synthesis: Arc<StdMutex<EvolvingSynthesis>>,
+    synthesis_sink: Option<Arc<dyn SynthesisSink>>,
 }
 
 impl TracedReasoningTool {
     pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
         let model_resolver = ModelResolver::new();
-        
+
         let openai_client = if let Some(api_key) = &config.openai_api_key {
             let client = OpenAIClient::new(
                 api_key.clone(),
@@ -222,27 +263,27 @@ impl TracedReasoningTool {
         } else {
             None
         };
-        
+
         let mut openrouter_clients = Vec::new();
         if let Some(api_key) = &config.openrouter_api_key {
-            let common_models = vec![
-                "anthropic/claude-3-opus",
-                "google/gemini-2.5-pro",
-            ];
-            
+            let common_models = vec!["anthropic/claude-3-opus", "google/gemini-2.5-pro"];
+
             for model in common_models {
                 let client = OpenRouterClient::new(
                     api_key.clone(),
                     model.to_string(),
                     config.openrouter_base_url.clone(),
                 )?;
-                openrouter_clients.push((
-                    model.to_string(),
-                    Arc::new(client) as Arc<dyn LLMClient>
-                ));
+                openrouter_clients
+                    .push((model.to_string(), Arc::new(client) as Arc<dyn LLMClient>));
             }
         }
-        
+
+        let synthesis = Arc::new(StdMutex::new(EvolvingSynthesis::new_in_memory(
+            "traced_reasoning",
+            "default_session",
+        )));
+
         Ok(Self {
             session_manager,
             openai_client,
@@ -253,36 +294,67 @@ impl TracedReasoningTool {
             interventions: Vec::new(),
             branches: std::collections::HashMap::new(),
             original_query: None,
+            synthesis,
+            synthesis_sink: None,
         })
     }
-    
-    pub async fn process_thought(&mut self, request: TracedReasoningRequest) -> Result<TracedReasoningResponse> {
-        let session_id = self.session_manager.get_or_create_session(request.session_id.clone());
+
+    /// Set synthesis sink for database persistence
+    pub fn set_synthesis_sink(&mut self, sink: Arc<dyn SynthesisSink>) {
+        self.synthesis_sink = Some(sink);
+    }
+
+    pub async fn process_thought(
+        &mut self,
+        request: TracedReasoningRequest,
+    ) -> Result<TracedReasoningResponse> {
+        let session_id = self
+            .session_manager
+            .get_or_create_session(request.session_id.clone());
         let monitor = self.session_manager.get_monitor(&session_id)?;
-        
+
+        // Create synthesis for this session
+        self.synthesis = Arc::new(StdMutex::new(EvolvingSynthesis::new_in_memory(
+            "traced_reasoning",
+            &session_id,
+        )));
+
+        // Connect to sink if available (for future database persistence)
+        if let Some(_sink) = &self.synthesis_sink {
+            // TODO: Add constructor that accepts a custom sink
+            // For now, we'll use in-memory synthesis
+        }
+
         // Validate thought number
         if request.thought_number < 1 {
             anyhow::bail!("thought_number must be at least 1");
         }
-        
+
         if request.total_thoughts < 1 {
             anyhow::bail!("total_thoughts must be at least 1");
         }
-        
+
         // Get model for reasoning
-        let model = request.model
+        let model = request
+            .model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
             .unwrap_or_else(|| self.config.default_reasoning_model.clone());
-        
-        info!("Processing thought {} with model '{}'", request.thought_number, model);
-        
+
+        info!(
+            "Processing thought {} with model '{}'",
+            request.thought_number, model
+        );
+
         // Warn about o3 model usage
         if model.starts_with("o3") {
-            info!("⏳ Using {} for deep reasoning - this may take 30 seconds to 5 minutes", model);
-            info!("💭 Metacognitive reasoning in progress...");
+            info!(
+                "⚡ Activating {} deep reasoning engine - processing time: 30s to 5min",
+                model
+            );
+            info!("🔮 Metacognitive analysis initiated...");
         }
-        
+
         // For first thought, store the original query
         if request.thought_number == 1 {
             self.original_query = Some(request.thought.clone());
@@ -290,12 +362,12 @@ impl TracedReasoningTool {
             self.thought_history.clear();
             self.interventions.clear();
             self.branches.clear();
-            
+
             // Reset monitor
             let mut monitor_guard = monitor.lock();
             monitor_guard.reset_session();
         }
-        
+
         // Generate thought content using LLM
         let (generated_content, thought_type) = if request.thought_number == 1 {
             // For first thought, acknowledge the query and begin exploration
@@ -307,11 +379,11 @@ impl TracedReasoningTool {
         } else {
             // Build context from previous thoughts
             let context = self.build_reasoning_context(&request);
-            
+
             // Create prompt for LLM
             let system_prompt = self.build_system_prompt(&request.guardrails);
             let user_prompt = self.build_user_prompt(&request, &context);
-            
+
             // Create messages for LLM
             let messages = vec![
                 ChatMessage {
@@ -323,30 +395,35 @@ impl TracedReasoningTool {
                     content: user_prompt,
                 },
             ];
-            
+
             // Call LLM with fallback logic
-            let (response_content, actual_model) = self.call_llm_with_fallback(
-                &model, 
-                messages, 
-                request.temperature, 
-                request.thought_number
-            ).await?;
-            
+            // Use more tokens for GPT-5 in traced reasoning for deeper analysis
+            let (response_content, actual_model) = self
+                .call_llm_with_fallback(
+                    &model,
+                    messages,
+                    request.temperature,
+                    request.thought_number,
+                )
+                .await?;
+
             let (step_type, _, _) = self.parse_step_response(&response_content);
             (response_content, step_type)
         };
-        
+
         // Calculate metrics for this thought
-        let step_metrics = self.calculate_step_metrics(
-            &generated_content,
-            self.original_query.as_ref().unwrap_or(&"".to_string()),
-            &self.thought_history,
-            &request.guardrails,
-            monitor.clone(),
-        ).await?;
-        
+        let step_metrics = self
+            .calculate_step_metrics(
+                &generated_content,
+                self.original_query.as_ref().unwrap_or(&"".to_string()),
+                &self.thought_history,
+                &request.guardrails,
+                monitor.clone(),
+            )
+            .await?;
+
         let confidence = self.calculate_step_confidence(&step_metrics);
-        
+
         // Check for interventions
         let intervention = self.check_thought_interventions(
             request.thought_number,
@@ -355,11 +432,11 @@ impl TracedReasoningTool {
             &request.guardrails,
             monitor.clone(),
         );
-        
+
         if let Some(ref interv) = intervention {
             self.interventions.push(interv.clone());
         }
-        
+
         // Store thought data
         let thought_data = ThoughtData {
             thought_number: request.thought_number,
@@ -371,15 +448,82 @@ impl TracedReasoningTool {
             revises_thought: request.revises_thought,
             branch_id: request.branch_id.clone(),
         };
-        
+
+        // Update synthesis with this thought
+        {
+            use lux_synthesis::events::SynthesisEvent;
+
+            let synthesis = self.synthesis.lock().unwrap();
+
+            // Update understanding
+            let understanding = if request.thought_number == 1 {
+                format!("Starting reasoning: {}", request.thought)
+            } else {
+                format!(
+                    "Thought {}: {}",
+                    request.thought_number,
+                    generated_content
+                        .lines()
+                        .next()
+                        .unwrap_or(&generated_content)
+                )
+            };
+
+            // Update confidence and clarity based on metrics
+            let progress = request.thought_number as f32 / request.total_thoughts as f32;
+            let clarity = step_metrics.semantic_similarity.unwrap_or(0.5);
+
+            synthesis.apply(SynthesisEvent::Understanding {
+                text: understanding,
+                confidence: Some(confidence),
+                clarity: Some(clarity),
+            })?;
+
+            // Extract insights from high-confidence thoughts
+            if confidence > 0.7 {
+                synthesis.apply(SynthesisEvent::Insight(InsightEntry {
+                    insight: format!(
+                        "Reasoning insight from thought {}: {}",
+                        request.thought_number,
+                        generated_content
+                            .lines()
+                            .find(|l| l.contains("therefore")
+                                || l.contains("because")
+                                || l.contains("key"))
+                            .unwrap_or("Key reasoning step completed")
+                    ),
+                    confidence,
+                    source_step: request.thought_number,
+                    supported_by_evidence: true,
+                }))?;
+            }
+
+            // Add action items if approaching conclusion
+            if !request.next_thought_needed || request.thought_number >= request.total_thoughts - 1
+            {
+                synthesis.apply(SynthesisEvent::Action(ActionItem {
+                    action: "Synthesize reasoning into final conclusion".to_string(),
+                    priority: Priority::High,
+                    rationale: "Reasoning chain approaching completion".to_string(),
+                    dependencies: vec![],
+                }))?;
+            }
+
+            // Mark step complete
+            synthesis.apply(SynthesisEvent::StepComplete {
+                step_number: request.thought_number,
+            })?;
+        }
+
         // Handle branching
         if request.branch_from_thought.is_some() && request.branch_id.is_some() {
             let branch_id = request.branch_id.as_ref().unwrap();
-            self.branches.entry(branch_id.clone())
+            self.branches
+                .entry(branch_id.clone())
                 .or_insert_with(Vec::new)
                 .push(thought_data.clone());
         }
-        
+
         // Add to main history (revisions replace the original thought)
         if request.is_revision && request.revises_thought.is_some() {
             let revises_idx = request.revises_thought.unwrap() as usize - 1;
@@ -389,18 +533,31 @@ impl TracedReasoningTool {
         } else {
             self.thought_history.push(thought_data);
         }
-        
+
         // Build response
-        let mut response = self.build_reasoning_response(&request, generated_content, thought_type.clone(), step_metrics, confidence, &model);
-        
+        let mut response = self.build_reasoning_response(
+            &request,
+            generated_content,
+            thought_type.clone(),
+            step_metrics,
+            confidence,
+            &model,
+        );
+
         // Set intervention if needed
         response.intervention = intervention;
-        
+
         // Check if we've reached a conclusion
-        let is_conclusion = thought_type == StepType::Conclusion || 
-                           response.thought_content.to_lowercase().contains("final answer") ||
-                           response.thought_content.to_lowercase().contains("conclusion");
-        
+        let is_conclusion = thought_type == StepType::Conclusion
+            || response
+                .thought_content
+                .to_lowercase()
+                .contains("final answer")
+            || response
+                .thought_content
+                .to_lowercase()
+                .contains("conclusion");
+
         // Handle reasoning completion
         if !request.next_thought_needed || is_conclusion {
             response.reasoning_complete = Some(true);
@@ -414,57 +571,55 @@ impl TracedReasoningTool {
                 4. Any caveats or limitations identified".to_string()
             );
         }
-        
+
         Ok(response)
     }
-    
+
     fn build_reasoning_context(&self, request: &TracedReasoningRequest) -> String {
         let mut context = String::new();
-        
+
         // Add original query
         if let Some(ref query) = self.original_query {
             context.push_str(&format!("Original Query: {}\n\n", query));
         }
-        
+
         // Add previous thoughts
         context.push_str("Previous reasoning thoughts:\n");
         for thought in &self.thought_history {
             context.push_str(&format!(
                 "Thought {}: [Type: {:?}, Confidence: {:.2}]\n{}\n\n",
-                thought.thought_number,
-                thought.thought_type,
-                thought.confidence,
-                thought.content
+                thought.thought_number, thought.thought_type, thought.confidence, thought.content
             ));
         }
-        
+
         // Add intervention history if any
         if !self.interventions.is_empty() {
             context.push_str("\nInterventions triggered:\n");
             for intervention in &self.interventions {
                 context.push_str(&format!(
                     "- Thought {}: {:?} - {}\n",
-                    intervention.step,
-                    intervention.intervention_type,
-                    intervention.description
+                    intervention.step, intervention.intervention_type, intervention.description
                 ));
             }
         }
-        
+
         // Add branch information if relevant
         if request.branch_from_thought.is_some() {
             context.push_str("\nThis is a branch exploring an alternative reasoning path.\n");
         }
-        
+
         // Add revision context if relevant
         if request.is_revision && request.revises_thought.is_some() {
             let revises_num = request.revises_thought.unwrap();
-            context.push_str(&format!("\nThis thought revises thought {} based on new insights.\n", revises_num));
+            context.push_str(&format!(
+                "\nThis thought revises thought {} based on new insights.\n",
+                revises_num
+            ));
         }
-        
+
         context
     }
-    
+
     fn build_user_prompt(&self, request: &TracedReasoningRequest, context: &str) -> String {
         let thought_type = if request.thought_number <= 2 {
             "exploration"
@@ -473,7 +628,7 @@ impl TracedReasoningTool {
         } else {
             "analysis"
         };
-        
+
         format!(
             "{}Current thought number: {} of {}\n\
             Generate the next {} thought in this reasoning process.\n\
@@ -493,7 +648,7 @@ impl TracedReasoningTool {
             request.thought_number
         )
     }
-    
+
     fn check_thought_interventions(
         &self,
         thought_number: u32,
@@ -506,7 +661,7 @@ impl TracedReasoningTool {
         {
             let mut monitor_guard = monitor.lock();
             let signals = monitor_guard.analyze_thought(thought_content, thought_number as usize);
-            
+
             if let Some(intervention_msg) = signals.intervention {
                 let intervention_type = if signals.circular_score > 0.85 {
                     InterventionType::CircularReasoning
@@ -515,7 +670,7 @@ impl TracedReasoningTool {
                 } else {
                     InterventionType::InconsistentLogic
                 };
-                
+
                 return Some(Intervention {
                     step: thought_number,
                     intervention_type,
@@ -524,7 +679,7 @@ impl TracedReasoningTool {
                 });
             }
         }
-        
+
         // Semantic drift check
         if guardrails.semantic_drift_check {
             if let Some(similarity) = metrics.semantic_similarity {
@@ -536,12 +691,16 @@ impl TracedReasoningTool {
                             "Reasoning drifting from original query (similarity: {:.2})",
                             similarity
                         ),
-                        severity: if similarity < 0.2 { Severity::High } else { Severity::Medium },
+                        severity: if similarity < 0.2 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        },
                     });
                 }
             }
         }
-        
+
         // Perplexity check
         if guardrails.perplexity_monitoring {
             if let Some(perplexity) = metrics.perplexity {
@@ -550,12 +709,16 @@ impl TracedReasoningTool {
                         step: thought_number,
                         intervention_type: InterventionType::HighPerplexity,
                         description: format!("High perplexity detected: {:.1}", perplexity),
-                        severity: if perplexity > 80.0 { Severity::High } else { Severity::Medium },
+                        severity: if perplexity > 80.0 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        },
                     });
                 }
             }
         }
-        
+
         // Circular reasoning check
         if guardrails.circular_reasoning_detection && self.thought_history.len() > 2 {
             for prev_thought in self.thought_history.iter().rev().take(3) {
@@ -569,10 +732,10 @@ impl TracedReasoningTool {
                 }
             }
         }
-        
+
         None
     }
-    
+
     fn build_reasoning_response(
         &self,
         request: &TracedReasoningRequest,
@@ -592,24 +755,25 @@ impl TracedReasoningTool {
             branch_id: request.branch_id.clone(),
             needs_more_thoughts: request.needs_more_thoughts,
         };
-        
+
         let status = if request.next_thought_needed {
             "thinking".to_string()
         } else {
             "conclusion_reached".to_string()
         };
-        
+
         let next_steps = if request.next_thought_needed {
             let remaining = request.total_thoughts - request.thought_number;
             Some(format!(
                 "Continue with thought {}. Approximately {} thoughts remaining.",
-                request.thought_number + 1, remaining
+                request.thought_number + 1,
+                remaining
             ))
         } else {
             None
         };
-        
-        TracedReasoningResponse {
+
+        let mut response = TracedReasoningResponse {
             status,
             thought_number: request.thought_number,
             total_thoughts: request.total_thoughts,
@@ -625,15 +789,50 @@ impl TracedReasoningTool {
             intervention: None,
             overall_metrics: None,
             model_used: Some(model.to_string()),
+            synthesis_snapshot: None,
+        };
+
+        // Add synthesis snapshot
+        {
+            let synthesis = self.synthesis.lock().unwrap();
+            let state = synthesis.snapshot();
+            response.synthesis_snapshot = Some(SynthesisSnapshot {
+                current_understanding: state.current_understanding.clone(),
+                key_insights: state
+                    .key_insights
+                    .iter()
+                    .map(|i| i.insight.clone())
+                    .collect(),
+                next_actions: state
+                    .action_items
+                    .iter()
+                    .map(|a| a.action.clone())
+                    .collect(),
+                confidence_level: match (state.confidence_score * 100.0) as i32 {
+                    0..=30 => "low".to_string(),
+                    31..=60 => "medium".to_string(),
+                    61..=85 => "high".to_string(),
+                    _ => "very_high".to_string(),
+                },
+                clarity_level: match (state.clarity_score * 100.0) as i32 {
+                    0..=30 => "unclear".to_string(),
+                    31..=60 => "emerging".to_string(),
+                    61..=85 => "clear".to_string(),
+                    _ => "crystal_clear".to_string(),
+                },
+                ready_for_conclusion: state.confidence_score > 0.75 && !request.next_thought_needed,
+            });
         }
+
+        response
     }
-    
+
     fn build_system_prompt(&self, guardrails: &GuardrailConfig) -> String {
         let mut prompt = String::from(
             "You are a reasoning assistant that thinks step-by-step through problems. \
-            Structure your responses clearly with explicit reasoning steps.\n\n"
+            Structure your responses clearly with explicit reasoning steps.\n\n",
         );
-        
+
         if guardrails.semantic_drift_check {
             prompt.push_str("- Stay focused on the original query throughout your reasoning\n");
         }
@@ -643,16 +842,18 @@ impl TracedReasoningTool {
         if guardrails.consistency_validation {
             prompt.push_str("- Maintain logical consistency across all reasoning steps\n");
         }
-        
+
         prompt.push_str("\nFormat each step as:\nStep N: [Type: exploration/analysis/synthesis/validation/conclusion]\n[Your reasoning for this step]\n");
-        
+
         prompt
     }
-    
+
     fn parse_step_response(&self, content: &str) -> (StepType, String, bool) {
         let content_lower = content.to_lowercase();
-        
-        let step_type = if content_lower.contains("exploration") || content_lower.contains("exploring") {
+
+        let step_type = if content_lower.contains("exploration")
+            || content_lower.contains("exploring")
+        {
             StepType::Exploration
         } else if content_lower.contains("analysis") || content_lower.contains("analyzing") {
             StepType::Analysis
@@ -665,14 +866,14 @@ impl TracedReasoningTool {
         } else {
             StepType::Analysis
         };
-        
-        let is_final = content_lower.contains("final answer") || 
-                      content_lower.contains("conclusion") ||
-                      content_lower.contains("therefore, the answer");
-        
+
+        let is_final = content_lower.contains("final answer")
+            || content_lower.contains("conclusion")
+            || content_lower.contains("therefore, the answer");
+
         (step_type, content.to_string(), is_final)
     }
-    
+
     async fn calculate_step_metrics(
         &self,
         thought: &str,
@@ -685,18 +886,18 @@ impl TracedReasoningTool {
         let mut monitor_guard = monitor.lock();
         let thought_number = previous_thoughts.len() + 1;
         let signals = monitor_guard.analyze_thought(thought, thought_number);
-        
+
         // Map MonitoringSignals to StepMetrics
         // circular_score of 0 means no circular reasoning (good), 1 means high circular (bad)
         // So semantic_similarity should be 1.0 - circular_score
         let semantic_similarity = Some((1.0 - signals.circular_score) as f32);
-        
+
         // Monitor doesn't calculate perplexity yet, keep placeholder
         let perplexity = Some(20.0 + (thought.len() as f32 / 100.0));
-        
+
         // Monitor doesn't calculate attention entropy yet
         let attention_entropy = Some(0.7);
-        
+
         // Use quality trend to estimate consistency
         let consistency_score = match signals.quality_trend.as_str() {
             "improving" => Some(1.0),
@@ -704,7 +905,7 @@ impl TracedReasoningTool {
             "degrading" => Some(0.7),
             _ => Some(0.8),
         };
-        
+
         Ok(StepMetrics {
             semantic_similarity,
             perplexity,
@@ -712,25 +913,25 @@ impl TracedReasoningTool {
             consistency_score,
         })
     }
-    
+
     fn calculate_step_confidence(&self, metrics: &StepMetrics) -> f32 {
         let mut confidence = 1.0;
-        
+
         if let Some(similarity) = metrics.semantic_similarity {
             confidence *= similarity;
         }
-        
+
         if let Some(perplexity) = metrics.perplexity {
             confidence *= (50.0 - perplexity.min(50.0)) / 50.0;
         }
-        
+
         if let Some(consistency) = metrics.consistency_score {
             confidence *= consistency;
         }
-        
+
         confidence.max(0.1).min(1.0)
     }
-    
+
     fn check_interventions(
         &self,
         step: u32,
@@ -750,12 +951,16 @@ impl TracedReasoningTool {
                             "Reasoning drifting from original query (similarity: {:.2})",
                             similarity
                         ),
-                        severity: if similarity < 0.2 { Severity::High } else { Severity::Medium },
+                        severity: if similarity < 0.2 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        },
                     });
                 }
             }
         }
-        
+
         // Perplexity check
         if guardrails.perplexity_monitoring {
             if let Some(perplexity) = metrics.perplexity {
@@ -764,12 +969,16 @@ impl TracedReasoningTool {
                         step,
                         intervention_type: InterventionType::HighPerplexity,
                         description: format!("High perplexity detected: {:.1}", perplexity),
-                        severity: if perplexity > 80.0 { Severity::High } else { Severity::Medium },
+                        severity: if perplexity > 80.0 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        },
                     });
                 }
             }
         }
-        
+
         // Circular reasoning check
         if guardrails.circular_reasoning_detection && previous_steps.len() > 2 {
             for prev_step in previous_steps.iter().rev().take(3) {
@@ -783,20 +992,24 @@ impl TracedReasoningTool {
                 }
             }
         }
-        
+
         None
     }
-    
+
     fn text_similarity(&self, text1: &str, text2: &str) -> f32 {
         // Simple word overlap similarity
         let words1: std::collections::HashSet<_> = text1.split_whitespace().collect();
         let words2: std::collections::HashSet<_> = text2.split_whitespace().collect();
         let intersection = words1.intersection(&words2).count();
         let union = words1.union(&words2).count();
-        
-        if union == 0 { 0.0 } else { intersection as f32 / union as f32 }
+
+        if union == 0 {
+            0.0
+        } else {
+            intersection as f32 / union as f32
+        }
     }
-    
+
     fn extract_final_answer(&self, content: &str) -> String {
         if let Some(idx) = content.find("Final Answer:") {
             content[idx + 13..].trim().to_string()
@@ -806,7 +1019,7 @@ impl TracedReasoningTool {
             content.trim().to_string()
         }
     }
-    
+
     fn calculate_overall_metrics(&self, thoughts: &[ThoughtData]) -> ReasoningMetrics {
         let total_steps = thoughts.len() as u32;
         let average_confidence = if thoughts.is_empty() {
@@ -814,14 +1027,15 @@ impl TracedReasoningTool {
         } else {
             thoughts.iter().map(|t| t.confidence).sum::<f32>() / thoughts.len() as f32
         };
-        
+
         let semantic_coherence = thoughts
             .iter()
             .filter_map(|t| t.metrics.semantic_similarity)
-            .fold(0.0, |acc, x| acc + x) / thoughts.len().max(1) as f32;
-        
+            .fold(0.0, |acc, x| acc + x)
+            / thoughts.len().max(1) as f32;
+
         let reasoning_quality = average_confidence * semantic_coherence;
-        
+
         ReasoningMetrics {
             total_steps,
             average_confidence,
@@ -830,26 +1044,29 @@ impl TracedReasoningTool {
             path_consensus: None, // Would require multiple reasoning paths
         }
     }
-    
+
     fn calculate_final_confidence(
         &self,
         metrics: &ReasoningMetrics,
         interventions: &[Intervention],
     ) -> f32 {
         let base_confidence = metrics.reasoning_quality;
-        
-        let intervention_penalty = interventions.iter().map(|i| match i.severity {
-            Severity::Low => 0.05,
-            Severity::Medium => 0.1,
-            Severity::High => 0.2,
-            Severity::Critical => 0.4,
-        }).sum::<f32>();
-        
+
+        let intervention_penalty = interventions
+            .iter()
+            .map(|i| match i.severity {
+                Severity::Low => 0.05,
+                Severity::Medium => 0.1,
+                Severity::High => 0.2,
+                Severity::Critical => 0.4,
+            })
+            .sum::<f32>();
+
         (base_confidence - intervention_penalty).max(0.1).min(1.0)
     }
-    
+
     async fn call_llm_with_fallback(
-        &self, 
+        &self,
         requested_model: &str,
         messages: Vec<ChatMessage>,
         temperature: f32,
@@ -857,26 +1074,35 @@ impl TracedReasoningTool {
     ) -> Result<(String, String)> {
         info!("🚀 Sending thought {} to LLM for reasoning", thought_number);
         let start_time = std::time::Instant::now();
-        
+
         // Define fallback models
         let fallback_models = self.get_fallback_models(requested_model);
-        
+
         // Try requested model and fallbacks
         let mut last_error = None;
         for (attempt, model) in std::iter::once(requested_model.to_string())
             .chain(fallback_models.iter().cloned())
-            .enumerate() 
+            .enumerate()
         {
             if attempt > 0 {
-                info!("🔄 Attempting fallback model: {} (attempt {})", model, attempt + 1);
+                info!(
+                    "🔄 Attempting fallback model: {} (attempt {})",
+                    model,
+                    attempt + 1
+                );
             }
-            
-            match self.try_llm_call(&model, messages.clone(), temperature).await {
+
+            match self
+                .try_llm_call(&model, messages.clone(), temperature)
+                .await
+            {
                 Ok(response) => {
                     let elapsed = start_time.elapsed();
                     if attempt > 0 {
-                        info!("✅ Thought {} generated using fallback model {} in {:?}", 
-                            thought_number, model, elapsed);
+                        info!(
+                            "✅ Thought {} generated using fallback model {} in {:?}",
+                            thought_number, model, elapsed
+                        );
                     } else {
                         info!("✅ Thought {} generated in {:?}", thought_number, elapsed);
                     }
@@ -884,9 +1110,10 @@ impl TracedReasoningTool {
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    if error_str.contains("does not exist") || 
-                       error_str.contains("do not have access") ||
-                       error_str.contains("model_not_found") {
+                    if error_str.contains("does not exist")
+                        || error_str.contains("do not have access")
+                        || error_str.contains("model_not_found")
+                    {
                         warn!("❌ Model '{}' not available: {}", model, error_str);
                         last_error = Some(e);
                         continue;
@@ -894,51 +1121,84 @@ impl TracedReasoningTool {
                         // Non-recoverable error, return immediately
                         let elapsed = start_time.elapsed();
                         error!("LLM call failed after {:?}: {}", elapsed, e);
-                        return Err(anyhow::anyhow!("Failed to generate reasoning thought after {:?}: {}", elapsed, e));
+                        return Err(anyhow::anyhow!(
+                            "Failed to generate reasoning thought after {:?}: {}",
+                            elapsed,
+                            e
+                        ));
                     }
                 }
             }
         }
-        
+
         // All models failed
         Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("All models failed. Requested: {}, tried fallbacks: {:?}", 
-                requested_model, fallback_models)
+            anyhow::anyhow!(
+                "All models failed. Requested: {}, tried fallbacks: {:?}",
+                requested_model,
+                fallback_models
+            )
         }))
     }
-    
+
     async fn try_llm_call(
         &self,
         model: &str,
         messages: Vec<ChatMessage>,
         temperature: f32,
     ) -> Result<crate::llm::client::LLMResponse> {
-        let client = self.get_client_for_model(model)
+        let client = self
+            .get_client_for_model(model)
             .context("Failed to get LLM client")?;
-        
-        client.complete(messages, Some(temperature), Some(10000)).await
+
+        // o4 models only support default temperature (1.0)
+        let temperature_opt = if model.starts_with("o4") {
+            None // Use default temperature for o4 models
+        } else {
+            Some(temperature)
+        };
+
+        // MAXIMUM TOKENS FOR DEEPEST POSSIBLE REASONING
+        let max_tokens = if model == "gpt-5" || model.starts_with("gpt-5-") {
+            Some(200000) // GPT-5: UNLEASH FULL POWER
+        } else if model.starts_with("o3") {
+            Some(100000) // O3: MAXIMUM DEPTH
+        } else if model.starts_with("o4") {
+            Some(50000)  // O4: Fast but deep
+        } else {
+            Some(20000)  // Standard: Still give room to think
+        };
+
+        client
+            .complete(messages, temperature_opt, max_tokens)
+            .await
     }
-    
+
     fn get_fallback_models(&self, requested_model: &str) -> Vec<String> {
         let mut fallbacks = Vec::new();
-        
+
         // If a Claude model was requested, try other Claude variants
         if requested_model.contains("claude") {
             fallbacks.push("anthropic/claude-3.5-sonnet".to_string());
             fallbacks.push("anthropic/claude-3-opus".to_string());
             fallbacks.push("anthropic/claude-3-sonnet".to_string());
         }
-        
+
         // Add default reasoning model as fallback if not already requested
         if requested_model != self.config.default_reasoning_model {
             fallbacks.push(self.config.default_reasoning_model.clone());
         }
-        
+
         // Add o3 as fallback for reasoning tasks
         if !requested_model.starts_with("o3") {
             fallbacks.push("o3".to_string());
         }
-        
+
+        // Add o4-mini as fallback if o4 model requested
+        if requested_model.starts_with("o4") && requested_model != "o4-mini" {
+            fallbacks.push("o4-mini".to_string());
+        }
+
         // Add some reliable fallbacks
         if !requested_model.contains("gpt-4") {
             fallbacks.push("gpt-4o-mini".to_string());
@@ -946,34 +1206,41 @@ impl TracedReasoningTool {
         if !requested_model.contains("gemini") {
             fallbacks.push("google/gemini-2.5-pro".to_string());
         }
-        
+
         // Remove duplicates while preserving order
         let mut seen = HashSet::new();
         fallbacks.retain(|model| seen.insert(model.clone()));
-        
+
         fallbacks
     }
-    
+
     fn get_client_for_model(&self, model: &str) -> Result<Arc<dyn LLMClient>> {
         debug!("Getting client for model: {}", model);
-        debug!("OpenAI key available: {}", self.config.openai_api_key.is_some());
-        debug!("OpenRouter key available: {}", self.config.openrouter_api_key.is_some());
-        
+        debug!(
+            "OpenAI key available: {}",
+            self.config.openai_api_key.is_some()
+        );
+        debug!(
+            "OpenRouter key available: {}",
+            self.config.openrouter_api_key.is_some()
+        );
+
         if self.model_resolver.is_openrouter_model(model) {
             info!("Using OpenRouter for model: {}", model);
             if self.config.openrouter_api_key.is_none() {
                 error!("OpenRouter API key not configured for model: {}", model);
                 anyhow::bail!("OpenRouter API key not configured");
             }
-            
-            if let Some((_, client)) = self.openrouter_clients
-                .iter()
-                .find(|(m, _)| m == model) {
+
+            if let Some((_, client)) = self.openrouter_clients.iter().find(|(m, _)| m == model) {
                 debug!("Found pre-created OpenRouter client for model: {}", model);
                 Ok(client.clone())
             } else {
                 debug!("Creating new OpenRouter client for model: {}", model);
-                let api_key = self.config.openrouter_api_key.as_ref()
+                let api_key = self
+                    .config
+                    .openrouter_api_key
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not available"))?;
                 let new_client = OpenRouterClient::new(
                     api_key.clone(),

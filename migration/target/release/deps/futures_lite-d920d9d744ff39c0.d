@@ -1,0 +1,11 @@
+/Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/target/release/deps/libfutures_lite-d920d9d744ff39c0.rmeta: /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/lib.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/future.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/prelude.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/stream.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/io.rs
+
+/Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/target/release/deps/libfutures_lite-d920d9d744ff39c0.rlib: /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/lib.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/future.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/prelude.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/stream.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/io.rs
+
+/Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/target/release/deps/futures_lite-d920d9d744ff39c0.d: /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/lib.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/future.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/prelude.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/stream.rs /Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/io.rs
+
+/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/lib.rs:
+/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/future.rs:
+/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/prelude.rs:
+/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/stream.rs:
+/Users/alan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.0/src/io.rs:

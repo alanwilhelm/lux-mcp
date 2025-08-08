@@ -4,13 +4,16 @@ use tokio::io::{stdin, stdout};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-mod metachain;
-mod monitoring;
-mod models;
+mod db;
+mod entities;
 mod llm;
-mod tools;
+mod metachain;
+mod models;
+mod monitoring;
 mod server;
 mod session;
+mod threading;
+mod tools;
 
 use server::LuxServer;
 
@@ -18,7 +21,7 @@ use server::LuxServer;
 async fn main() -> Result<()> {
     // Load environment variables
     dotenv::dotenv().ok();
-    
+
     // Initialize logging to stderr only
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -28,7 +31,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    info!("Starting Lux MCP Server v{} - Illuminating your thinking...", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting Lux MCP Server v{} - Illuminating your thinking...",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Check API keys (non-empty)
     let openai_available = std::env::var("OPENAI_API_KEY")
@@ -39,8 +45,22 @@ async fn main() -> Result<()> {
         .unwrap_or(false);
 
     info!("API Configuration:");
-    info!("  OpenAI API key: {}", if openai_available { "✓ Available" } else { "✗ Not found" });
-    info!("  OpenRouter API key: {}", if openrouter_available { "✓ Available" } else { "✗ Not found" });
+    info!(
+        "  OpenAI API key: {}",
+        if openai_available {
+            "✓ Available"
+        } else {
+            "✗ Not found"
+        }
+    );
+    info!(
+        "  OpenRouter API key: {}",
+        if openrouter_available {
+            "✓ Available"
+        } else {
+            "✗ Not found"
+        }
+    );
 
     if !openai_available && !openrouter_available {
         eprintln!("No API keys found! Please set OPENAI_API_KEY or OPENROUTER_API_KEY");
@@ -51,15 +71,21 @@ async fn main() -> Result<()> {
     let config = llm::config::LLMConfig::from_env()?;
     info!("Default Models:");
     info!("  Chat (confer): {}", config.default_chat_model);
-    info!("  Reasoning (traced_reasoning): {}", config.default_reasoning_model);
-    info!("  Bias Checker (biased_reasoning): {}", config.default_bias_checker_model);
+    info!(
+        "  Reasoning (traced_reasoning): {}",
+        config.default_reasoning_model
+    );
+    info!(
+        "  Bias Checker (biased_reasoning): {}",
+        config.default_bias_checker_model
+    );
 
     // Create the server
-    let server = LuxServer::new()?;
+    let server = LuxServer::new().await?;
     info!("Lux server initialized successfully");
 
     // Spawn session cleanup task
-    let session_manager = server.session_manager.clone();
+    let session_manager = server.session_manager();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
         loop {

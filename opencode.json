@@ -1,0 +1,52 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "lux": {
+      "type": "local",
+      "command": ["/Users/alan/Projects/_MCP/nirvana/lux-mcp/target/release/lux-mcp"],
+      "environment": {
+        "OPENAI_API_KEY": "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",
+        "OPENROUTER_API_KEY": "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",
+        "LUX_DEFAULT_CHAT_MODEL": "o3-pro",
+        "LUX_DEFAULT_REASONING_MODEL": "o3-pro",
+        "LUX_DEFAULT_BIAS_CHECKER_MODEL": "o4-mini",
+        "RUST_LOG": "info"
+      },
+      "enabled": true
+    },
+    "Context7": {
+      "type": "local",
+      "command": [
+        "/Users/alan/.nvm/versions/node/v22.15.0/bin/node",
+        "/Users/alan/.nvm/versions/node/v22.15.0/lib/node_modules/@upstash/context7-mcp/dist/index.js"
+      ],
+      "enabled": true
+    },
+    "conport": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "--from",
+        "context-portal-mcp",
+        "conport-mcp",
+        "--mode",
+        "stdio",
+        "--workspace_id",
+        "${workspaceFolder}",
+        "--log-file",
+        "./logs/conport.log",
+        "--log-level",
+        "INFO"
+      ],
+      "enabled": true
+    },
+    "puppeteer": {
+      "type": "local",
+      "command": [
+        "/Users/alan/.nvm/versions/node/v22.15.0/bin/node",
+        "/Users/alan/.nvm/versions/node/v22.15.0/lib/node_modules/@modelcontextprotocol/server-puppeteer/dist/index.js"
+      ],
+      "enabled": true
+    }
+  }
+}

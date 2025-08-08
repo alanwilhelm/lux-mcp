@@ -1,9 +1,15 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, warn, info, error};
+use tracing::{debug, error, info, warn};
+
+// Token limits for different model families - OPTIMIZED FOR QUALITY
+const GPT5_DEFAULT_TOKENS: u32 = 200000;  // GPT-5: MAXIMUM reasoning depth (272K - 72K input)
+const GPT5_MAX_TOKENS: u32 = 250000;      // Push to absolute limit for deepest thinking
+const O3_DEFAULT_TOKENS: u32 = 100000;    // O3: Maximum reasoning (200K - 100K input)
+const STANDARD_DEFAULT_TOKENS: u32 = 20000; // Even standard models get more thinking space
 
 use super::client::{ChatMessage, LLMClient, LLMResponse, Role, TokenUsage};
 
@@ -17,9 +23,9 @@ struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,  // For o4 models
+    max_completion_tokens: Option<u32>, // For o4 models
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,     // For o4 models
+    reasoning_effort: Option<String>, // For o4 models
 }
 
 // Responses API structures (for o3 models)
@@ -122,12 +128,12 @@ pub struct OpenAIClient {
 impl OpenAIClient {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(300))  // 5 minute timeout for o3 models
+            .timeout(Duration::from_secs(300)) // 5 minute timeout for o3 models
             .build()
             .context("Failed to build HTTP client")?;
-        
+
         let base_url = base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        
+
         Ok(Self {
             client,
             api_key,
@@ -136,17 +142,32 @@ impl OpenAIClient {
             max_retries: 3,
         })
     }
-    
+
     fn is_o3_model(model: &str) -> bool {
         // O3 models use the Responses API
         model.starts_with("o3")
     }
-    
+
     fn is_o4_model(model: &str) -> bool {
         // O4 models use chat completions with max_completion_tokens
         model.starts_with("o4")
     }
     
+    fn is_gpt5_model(model: &str) -> bool {
+        // GPT-5 models - available now!
+        model == "gpt-5" || model.starts_with("gpt-5-")
+    }
+    
+    pub fn get_optimal_tokens(model: &str) -> u32 {
+        if Self::is_gpt5_model(model) {
+            GPT5_DEFAULT_TOKENS
+        } else if model.starts_with("o3") {
+            O3_DEFAULT_TOKENS
+        } else {
+            STANDARD_DEFAULT_TOKENS
+        }
+    }
+
     fn convert_role(role: &Role) -> String {
         match role {
             Role::System => "system".to_string(),
@@ -154,7 +175,7 @@ impl OpenAIClient {
             Role::Assistant => "assistant".to_string(),
         }
     }
-    
+
     fn convert_messages(messages: &[ChatMessage]) -> Vec<OpenAIMessage> {
         messages
             .iter()
@@ -164,19 +185,28 @@ impl OpenAIClient {
             })
             .collect()
     }
-    
-    async fn make_chat_request(&self, messages: Vec<ChatMessage>, temperature: Option<f32>, max_tokens: Option<u32>) -> Result<LLMResponse> {
+
+    async fn make_chat_request(
+        &self,
+        messages: Vec<ChatMessage>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<LLMResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        
-        // O4 models require max_completion_tokens instead of max_tokens and support reasoning_effort
-        let request = if Self::is_o4_model(&self.model) {
+
+        // O4 and GPT-5 models require max_completion_tokens instead of max_tokens
+        let request = if Self::is_o4_model(&self.model) || Self::is_gpt5_model(&self.model) {
             ChatCompletionRequest {
                 model: self.model.clone(),
                 messages: Self::convert_messages(&messages),
                 temperature,
                 max_tokens: None,
                 max_completion_tokens: max_tokens,
-                reasoning_effort: Some("high".to_string()),  // Set to high for maximum reasoning
+                reasoning_effort: if Self::is_gpt5_model(&self.model) { 
+                    None  // GPT-5 doesn't use reasoning_effort
+                } else { 
+                    Some("high".to_string()) // O4 uses reasoning_effort
+                },
             }
         } else {
             ChatCompletionRequest {
@@ -188,12 +218,12 @@ impl OpenAIClient {
                 reasoning_effort: None,
             }
         };
-        
+
         info!("OpenAI chat request - Model: {}, Messages: {}, Temperature: {:?}, Max tokens: {:?}, Reasoning effort: {:?}", 
-            request.model, request.messages.len(), request.temperature, 
-            if Self::is_o4_model(&self.model) { request.max_completion_tokens } else { request.max_tokens },
+            request.model, request.messages.len(), request.temperature,
+            if Self::is_o4_model(&self.model) || Self::is_gpt5_model(&self.model) { request.max_completion_tokens } else { request.max_tokens },
             request.reasoning_effort);
-        
+
         let response = self
             .client
             .post(&url)
@@ -203,24 +233,26 @@ impl OpenAIClient {
             .send()
             .await
             .context("Failed to send request to OpenAI")?;
-        
+
         let status = response.status();
         info!("OpenAI response status: {}", status);
-        
+
         if status.is_success() {
             let response_text = response.text().await?;
-            let parsed: ChatCompletionResponse = serde_json::from_str(&response_text)
-                .context("Failed to parse OpenAI response")?;
-            
-            let choice = parsed.choices.first()
+            let parsed: ChatCompletionResponse =
+                serde_json::from_str(&response_text).context("Failed to parse OpenAI response")?;
+
+            let choice = parsed
+                .choices
+                .first()
                 .context("No choices in OpenAI response")?;
-            
+
             let usage = parsed.usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             });
-            
+
             Ok(LLMResponse {
                 content: choice.message.content.clone(),
                 model: parsed.model,
@@ -228,9 +260,15 @@ impl OpenAIClient {
                 finish_reason: choice.finish_reason.clone(),
             })
         } else {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            error!("OpenAI API error - Status: {}, Response: {}", status, error_text);
-            
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                "OpenAI API error - Status: {}, Response: {}",
+                status, error_text
+            );
+
             if let Ok(error) = serde_json::from_str::<OpenAIError>(&error_text) {
                 anyhow::bail!(
                     "OpenAI API error ({}): {} - {}",
@@ -243,10 +281,15 @@ impl OpenAIClient {
             }
         }
     }
-    
-    async fn make_responses_request(&self, messages: Vec<ChatMessage>, temperature: Option<f32>, max_tokens: Option<u32>) -> Result<LLMResponse> {
+
+    async fn make_responses_request(
+        &self,
+        messages: Vec<ChatMessage>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<LLMResponse> {
         let url = format!("{}/responses", self.base_url);
-        
+
         // Convert messages to a single input string
         let input = messages
             .iter()
@@ -257,21 +300,21 @@ impl OpenAIClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        
+
         let request = ResponsesRequest {
             model: self.model.clone(),
             input,
-            temperature: None,  // O3 models don't support temperature
+            temperature: None, // O3 models don't support temperature
             max_output_tokens: max_tokens,
             reasoning: Some(ReasoningConfig {
-                effort: "high".to_string(),  // Set to high for maximum reasoning
+                effort: "high".to_string(), // Set to high for maximum reasoning
             }),
         };
-        
+
         info!("OpenAI Responses API request - Model: {}, Input length: {}, Temperature: {:?}, Max output tokens: {:?}, Reasoning effort: {:?}", 
-            request.model, request.input.len(), request.temperature, request.max_output_tokens, 
+            request.model, request.input.len(), request.temperature, request.max_output_tokens,
             request.reasoning.as_ref().map(|r| &r.effort));
-        
+
         let response = self
             .client
             .post(&url)
@@ -281,26 +324,26 @@ impl OpenAIClient {
             .send()
             .await
             .context("Failed to send request to OpenAI Responses API")?;
-        
+
         let status = response.status();
         info!("OpenAI response status: {}", status);
-        
+
         if status.is_success() {
             let response_text = response.text().await?;
             debug!("OpenAI Responses API raw response: {}", response_text);
             let parsed: ResponsesResponse = serde_json::from_str(&response_text)
                 .context("Failed to parse OpenAI Responses API response")?;
-            
+
             // Extract the message content from the output
             let mut content = String::new();
             debug!("Parsing {} outputs", parsed.output.len());
             for output in &parsed.output {
                 debug!("Output type: {}", output.output_type);
-                
+
                 // Note: O3 models have a "reasoning" output type but it doesn't contain
                 // the actual reasoning steps - just an empty summary array.
                 // The reasoning happens internally but isn't exposed via the API.
-                
+
                 if output.output_type == "message" {
                     if let Some(contents) = &output.content {
                         debug!("Found {} content items", contents.len());
@@ -317,13 +360,13 @@ impl OpenAIClient {
                     }
                 }
             }
-            
+
             let usage = parsed.usage.map(|u| TokenUsage {
                 prompt_tokens: u.input_tokens,
                 completion_tokens: u.output_tokens,
                 total_tokens: u.total_tokens,
             });
-            
+
             Ok(LLMResponse {
                 content,
                 model: parsed.model,
@@ -331,9 +374,15 @@ impl OpenAIClient {
                 finish_reason: Some("stop".to_string()),
             })
         } else {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            error!("OpenAI Responses API error - Status: {}, Response: {}", status, error_text);
-            
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                "OpenAI Responses API error - Status: {}, Response: {}",
+                status, error_text
+            );
+
             if let Ok(error) = serde_json::from_str::<OpenAIError>(&error_text) {
                 anyhow::bail!(
                     "OpenAI Responses API error ({}): {} - {}",
@@ -357,43 +406,46 @@ impl LLMClient for OpenAIClient {
         max_tokens: Option<u32>,
     ) -> Result<LLMResponse> {
         let mut last_error = None;
-        
+
         for attempt in 0..self.max_retries {
             if attempt > 0 {
                 let delay = Duration::from_millis(1000 * (attempt as u64 + 1));
                 debug!("Retry attempt {} after {:?}", attempt + 1, delay);
                 tokio::time::sleep(delay).await;
             }
-            
+
             let result = if Self::is_o3_model(&self.model) {
                 info!("Using Responses API for o3 model: {}", self.model);
-                self.make_responses_request(messages.clone(), temperature, max_tokens).await
+                self.make_responses_request(messages.clone(), temperature, max_tokens)
+                    .await
             } else {
                 info!("Using chat completions API for model: {}", self.model);
-                self.make_chat_request(messages.clone(), temperature, max_tokens).await
+                self.make_chat_request(messages.clone(), temperature, max_tokens)
+                    .await
             };
-            
+
             match result {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     warn!("OpenAI request failed (attempt {}): {}", attempt + 1, e);
                     last_error = Some(e);
-                    
+
                     // Don't retry on certain errors
                     if let Some(err_str) = last_error.as_ref().map(|e| e.to_string()) {
-                        if err_str.contains("invalid_api_key") 
+                        if err_str.contains("invalid_api_key")
                             || err_str.contains("insufficient_quota")
-                            || err_str.contains("model_not_found") {
+                            || err_str.contains("model_not_found")
+                        {
                             break;
                         }
                     }
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All retry attempts failed")))
     }
-    
+
     fn get_model_name(&self) -> &str {
         &self.model
     }

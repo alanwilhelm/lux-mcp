@@ -2,18 +2,20 @@
 
 ## Overview
 
-Lux MCP is a Model Context Protocol server that implements metacognitive monitoring for AI reasoning. It provides tools to detect and prevent overthinking spirals, circular reasoning, and distractor fixation through real-time analysis of thought patterns.
+Lux MCP is a Model Context Protocol server that implements metacognitive monitoring for AI reasoning while maintaining and refining context across conversations. It provides tools to detect and prevent overthinking spirals, circular reasoning, and distractor fixation through real-time analysis of thought patterns, while preserving and evolving understanding across tool interactions.
 
 ## Core Design Principles
 
-1. **Tool Specialization**: Three focused tools instead of one monolithic interface
-2. **Session Isolation**: Each conversation gets its own monitoring context
-3. **Transparent Monitoring**: Clear about what's implemented vs placeholder
-4. **Performance First**: Built in Rust for minimal overhead
-5. **Model Agnostic**: Works with any LLM through unified interface
+1. **Tool Specialization**: Focused tools with clear purposes
+2. **Context Continuity**: Conversations flow across tool boundaries
+3. **Dual Refinement**: Both understanding and quality improve over time
+4. **Transparent Monitoring**: Clear about what's implemented vs placeholder
+5. **Performance First**: Built in Rust for minimal overhead
+6. **Model Agnostic**: Works with any LLM through unified interface
 
 ## Architecture
 
+### Current Architecture
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Protocol Layer                        │
@@ -37,6 +39,50 @@ Lux MCP is a Model Context Protocol server that implements metacognitive monitor
 │  │      OpenAI Client      │  │  OpenRouter Client   │      │
 │  │  (GPT-4, O3, O4-mini)   │  │  (Claude, Gemini)    │      │
 │  └────────────────────────┘  └─────────────────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Target Architecture with Context Refinement
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MCP Protocol Layer                        │
+│                  (stdio transport, JSON-RPC)                 │
+├─────────────────────────────────────────────────────────────┤
+│                 Context Refinement Layer                     │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Thread Manager (Cross-Tool Conversation Memory)     │   │
+│  │  • UUID-based thread identification                  │   │
+│  │  • Context reconstruction and enhancement            │   │
+│  │  • 3-hour TTL with automatic cleanup                 │   │
+│  └─────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Synthesis Evolution (Understanding Refinement)      │   │
+│  │  • Progressive understanding development             │   │
+│  │  • Insight accumulation and connection               │   │
+│  │  • Confidence trajectory tracking                    │   │
+│  └─────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────┤
+│                 Quality Assurance Layer                      │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Metacognitive Monitoring (Per-Session)              │   │
+│  │  • Circular reasoning detection                      │   │
+│  │  • Distractor fixation prevention                    │   │
+│  │  • Quality degradation tracking                      │   │
+│  └─────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────┤
+│                    Context-Aware Tools                       │
+│  ┌────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │   confer    │  │    traced     │  │    biased     │     │
+│  │ +threading  │  │  reasoning    │  │  reasoning    │     │
+│  │            │  │  +threading   │  │  +threading   │     │
+│  └────────────┘  └──────────────┘  └──────────────┘       │
+├─────────────────────────────────────────────────────────────┤
+│                 Unified Persistence Layer                    │
+│  ┌──────────────────┐  ┌────────────────────────────┐      │
+│  │  In-Memory Store  │  │  Database (SeaORM/SQLite)  │      │
+│  │  • Thread context │  │  • Synthesis states        │      │
+│  │  • Hot cache      │  │  • Historical insights     │      │
+│  └──────────────────┘  └────────────────────────────┘      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -261,23 +307,35 @@ pub struct ModelResolver {
 
 ## Future Roadmap
 
-### Phase 1: Algorithm Implementation
+### Phase 1: Context Threading (High Priority)
+- [ ] UUID-based thread management
+- [ ] Cross-tool conversation memory
+- [ ] Context reconstruction from threads
+- [ ] Thread persistence (3-hour TTL)
+
+### Phase 2: Synthesis Evolution
+- [ ] Link synthesis to conversation threads
+- [ ] Insight graph implementation
+- [ ] Assumption tracking
+- [ ] Evidence chain building
+
+### Phase 3: Algorithm Implementation
 - [ ] Real semantic similarity using embeddings
 - [ ] Actual perplexity calculation
 - [ ] Attention entropy analysis
 - [ ] Improved circular reasoning detection
 
-### Phase 2: Production Features
-- [ ] Persistent session storage
+### Phase 4: Unified Context System
+- [ ] Merge conversation, synthesis, and quality contexts
+- [ ] Cross-pollination between systems
+- [ ] Hybrid persistence (memory + database)
+- [ ] Context-aware prompting
+
+### Phase 5: Production Features
 - [ ] Analytics and metrics
 - [ ] Rate limiting
 - [ ] Health checks
-
-### Phase 3: Advanced Monitoring
-- [ ] Multi-turn pattern detection
 - [ ] Cross-session learning
-- [ ] Model-specific tuning
-- [ ] Custom guardrail plugins
 
 ## Testing Strategy
 

@@ -1,0 +1,1 @@
+/Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/target/release/libmigration.rlib: /Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/src/lib.rs /Users/alan/Projects/_MCP/nirvana/lux-mcp/migration/src/m20240101_000001_create_tables.rs

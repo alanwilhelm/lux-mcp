@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -67,12 +67,12 @@ pub struct OpenRouterClient {
 impl OpenRouterClient {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(300))  // 5 minute timeout to match OpenAI client
+            .timeout(Duration::from_secs(300)) // 5 minute timeout to match OpenAI client
             .build()
             .context("Failed to build HTTP client")?;
-        
+
         let base_url = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-        
+
         Ok(Self {
             client,
             api_key,
@@ -81,7 +81,7 @@ impl OpenRouterClient {
             max_retries: 3,
         })
     }
-    
+
     fn convert_role(role: &Role) -> String {
         match role {
             Role::System => "system".to_string(),
@@ -89,7 +89,7 @@ impl OpenRouterClient {
             Role::Assistant => "assistant".to_string(),
         }
     }
-    
+
     fn convert_messages(messages: &[ChatMessage]) -> Vec<OpenRouterMessage> {
         messages
             .iter()
@@ -99,10 +99,10 @@ impl OpenRouterClient {
             })
             .collect()
     }
-    
+
     async fn make_request(&self, request: &OpenRouterRequest) -> Result<OpenRouterResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        
+
         let response = self
             .client
             .post(&url)
@@ -114,24 +114,23 @@ impl OpenRouterClient {
             .send()
             .await
             .context("Failed to send request to OpenRouter")?;
-        
+
         let status = response.status();
-        
+
         if status.is_success() {
             response
                 .json::<OpenRouterResponse>()
                 .await
                 .context("Failed to parse OpenRouter response")
         } else {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
             // Try to parse as OpenRouter error format
             if let Ok(error) = serde_json::from_str::<OpenRouterError>(&error_text) {
-                anyhow::bail!(
-                    "OpenRouter API error ({}): {}",
-                    status,
-                    error.error.message
-                );
+                anyhow::bail!("OpenRouter API error ({}): {}", status, error.error.message);
             } else {
                 anyhow::bail!("OpenRouter API error ({}): {}", status, error_text);
             }
@@ -153,29 +152,29 @@ impl LLMClient for OpenRouterClient {
             temperature,
             max_tokens,
         };
-        
+
         let mut last_error = None;
-        
+
         for attempt in 0..self.max_retries {
             if attempt > 0 {
                 let delay = Duration::from_millis(1000 * (attempt as u64 + 1));
                 debug!("Retry attempt {} after {:?}", attempt + 1, delay);
                 tokio::time::sleep(delay).await;
             }
-            
+
             match self.make_request(&request).await {
                 Ok(response) => {
                     let choice = response
                         .choices
                         .first()
                         .context("No choices in OpenRouter response")?;
-                    
+
                     let usage = response.usage.map(|u| TokenUsage {
                         prompt_tokens: u.prompt_tokens,
                         completion_tokens: u.completion_tokens,
                         total_tokens: u.total_tokens,
                     });
-                    
+
                     return Ok(LLMResponse {
                         content: choice.message.content.clone(),
                         model: response.model,
@@ -186,22 +185,23 @@ impl LLMClient for OpenRouterClient {
                 Err(e) => {
                     warn!("OpenRouter request failed (attempt {}): {}", attempt + 1, e);
                     last_error = Some(e);
-                    
+
                     // Don't retry on certain errors
                     if let Some(err_str) = last_error.as_ref().map(|e| e.to_string()) {
-                        if err_str.contains("invalid_api_key") 
+                        if err_str.contains("invalid_api_key")
                             || err_str.contains("insufficient_quota")
-                            || err_str.contains("credits") {
+                            || err_str.contains("credits")
+                        {
                             break;
                         }
                     }
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All retry attempts failed")))
     }
-    
+
     fn get_model_name(&self) -> &str {
         &self.model
     }

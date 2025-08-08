@@ -38,7 +38,7 @@ pub trait LLMClient: Send + Sync {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<LLMResponse>;
-    
+
     async fn complete_simple(
         &self,
         message: &str,
@@ -51,6 +51,6 @@ pub trait LLMClient: Send + Sync {
         }];
         self.complete(messages, temperature, max_tokens).await
     }
-    
+
     fn get_model_name(&self) -> &str;
 }

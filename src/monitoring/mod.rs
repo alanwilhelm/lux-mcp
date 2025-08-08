@@ -1,14 +1,14 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 mod circular_reasoning;
-use circular_reasoning::{CircularReasoningDetector, CircularPattern};
+use circular_reasoning::{CircularPattern, CircularReasoningDetector};
 
 mod distractor_fixation;
-use distractor_fixation::{DistractorFixationDetector, DistractorPattern};
+use distractor_fixation::DistractorFixationDetector;
 
 mod quality_degradation;
-use quality_degradation::{QualityDegradationDetector, DegradationAnalysis, DegradationPattern};
+use quality_degradation::{DegradationAnalysis, DegradationPattern, QualityDegradationDetector};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitoringSignals {
@@ -64,7 +64,7 @@ impl MetacognitiveMonitor {
             quality_degradation_detector: QualityDegradationDetector::new(),
         }
     }
-    
+
     pub fn reset_session(&mut self) {
         self.thought_history.clear();
         self.intervention_history.clear();
@@ -78,28 +78,30 @@ impl MetacognitiveMonitor {
         if !self.distractor_detector.has_original_concepts() && !thought.trim().is_empty() {
             self.distractor_detector.set_original_query(thought);
         }
-        
+
         // Calculate metrics BEFORE adding to history
         let circular_score = self.detect_circular_reasoning(thought);
         let distractor_alert = self.detect_distractor_fixation(thought);
-        
+
         // Use advanced quality degradation analysis
-        let degradation_analysis = self.quality_degradation_detector.analyze_thought(thought, thought_number);
+        let degradation_analysis = self
+            .quality_degradation_detector
+            .analyze_thought(thought, thought_number);
         let quality_trend = self.determine_quality_trend(&degradation_analysis);
-        
+
         // Add to history AFTER calculating metrics
         self.thought_history.push_back(thought.to_string());
         if self.thought_history.len() > 10 {
             self.thought_history.pop_front();
         }
-        
+
         // Store quality score for backward compatibility
         let quality_score = 1.0 - degradation_analysis.overall_score;
         self.quality_scores.push_back(quality_score);
         if self.quality_scores.len() > 5 {
             self.quality_scores.pop_front();
         }
-        
+
         // Determine phase and intervention with degradation analysis
         let (phase, intervention) = self.determine_intervention_with_degradation(
             circular_score,
@@ -122,17 +124,21 @@ impl MetacognitiveMonitor {
         if self.thought_history.is_empty() {
             return 0.0;
         }
-        
+
         // Convert VecDeque to Vec for the detector
         let history: Vec<String> = self.thought_history.iter().cloned().collect();
-        
+
         // Detect circular patterns
-        let pattern = self.circular_detector.detect_pattern(current_thought, &history);
-        
+        let pattern = self
+            .circular_detector
+            .detect_pattern(current_thought, &history);
+
         // Convert pattern to score
         match pattern {
             CircularPattern::None => 0.0,
-            CircularPattern::Direct { similarity_score, .. } => similarity_score,
+            CircularPattern::Direct {
+                similarity_score, ..
+            } => similarity_score,
             CircularPattern::Cyclic { cycle_strength, .. } => cycle_strength * 0.9, // Slightly lower weight for cycles
             CircularPattern::Conceptual { average_similarity } => average_similarity * 0.8, // Lower weight for conceptual loops
         }
@@ -149,16 +155,16 @@ impl MetacognitiveMonitor {
         if analysis.degradation_patterns.is_empty() {
             return "stable".to_string();
         }
-        
+
         // Check for severe degradation patterns
-        let has_severe = analysis.degradation_patterns.iter().any(|p| {
-            match p {
-                DegradationPattern::CognitiveFatigue { .. } => true,
-                DegradationPattern::ReasoningSimplification { depth_decline, .. } => depth_decline > &0.4,
-                _ => false,
+        let has_severe = analysis.degradation_patterns.iter().any(|p| match p {
+            DegradationPattern::CognitiveFatigue { .. } => true,
+            DegradationPattern::ReasoningSimplification { depth_decline, .. } => {
+                depth_decline > &0.4
             }
+            _ => false,
         });
-        
+
         if has_severe || analysis.overall_score > 0.6 {
             "degrading".to_string()
         } else if analysis.overall_score > 0.3 {
@@ -167,11 +173,11 @@ impl MetacognitiveMonitor {
             "stable".to_string()
         }
     }
-    
+
     fn assess_quality_trend(&mut self, thought: &str) -> String {
         // Simple quality assessment based on thought length and structure
         let quality_score = self.calculate_quality_score(thought);
-        
+
         self.quality_scores.push_back(quality_score);
         if self.quality_scores.len() > 5 {
             self.quality_scores.pop_front();
@@ -180,9 +186,11 @@ impl MetacognitiveMonitor {
         // Determine trend
         if self.quality_scores.len() >= 3 {
             let recent: Vec<_> = self.quality_scores.iter().cloned().collect();
-            let avg_first_half = recent[..recent.len()/2].iter().sum::<f64>() / (recent.len()/2) as f64;
-            let avg_second_half = recent[recent.len()/2..].iter().sum::<f64>() / (recent.len() - recent.len()/2) as f64;
-            
+            let avg_first_half =
+                recent[..recent.len() / 2].iter().sum::<f64>() / (recent.len() / 2) as f64;
+            let avg_second_half = recent[recent.len() / 2..].iter().sum::<f64>()
+                / (recent.len() - recent.len() / 2) as f64;
+
             if avg_second_half < avg_first_half * 0.8 {
                 "degrading".to_string()
             } else if avg_second_half > avg_first_half * 1.2 {
@@ -195,33 +203,40 @@ impl MetacognitiveMonitor {
         }
     }
 
+    pub fn get_intervention_count(&self) -> usize {
+        self.intervention_history.len()
+    }
+
     fn calculate_quality_score(&self, thought: &str) -> f64 {
         let word_count = thought.split_whitespace().count();
-        let sentence_count = thought.matches('.').count() + thought.matches('!').count() + thought.matches('?').count();
-        
+        let sentence_count = thought.matches('.').count()
+            + thought.matches('!').count()
+            + thought.matches('?').count();
+
         // Basic quality heuristics
         let mut score = 0.5;
-        
+
         // Penalize very short or very long thoughts
         if word_count < 10 {
             score -= 0.2;
         } else if word_count > 200 {
             score -= 0.1;
         }
-        
+
         // Reward structured thinking
         if sentence_count > 1 && sentence_count < word_count / 10 {
             score += 0.2;
         }
-        
+
         // Check for reasoning indicators
         let reasoning_words = ["because", "therefore", "thus", "hence", "considering"];
-        let reasoning_count = reasoning_words.iter()
+        let reasoning_count = reasoning_words
+            .iter()
             .filter(|&word| thought.to_lowercase().contains(word))
             .count();
-        
+
         score += (reasoning_count as f64 * 0.1).min(0.3);
-        
+
         score.clamp(0.0, 1.0)
     }
 
@@ -238,13 +253,14 @@ impl MetacognitiveMonitor {
         // Check circular reasoning first (highest priority)
         if circular_score > 0.5 {
             phase = "overthinking".to_string();
-            intervention = Some("Consider breaking out of this loop with a new perspective.".to_string());
+            intervention =
+                Some("Consider breaking out of this loop with a new perspective.".to_string());
             self.intervention_history.push(InterventionRecord {
                 thought_number,
                 intervention_type: "circular_reasoning".to_string(),
                 reason: format!("High circular score: {:.2}", circular_score),
             });
-        } 
+        }
         // Check distractor fixation
         else if distractor_alert {
             phase = "distracted".to_string();
@@ -254,18 +270,20 @@ impl MetacognitiveMonitor {
                 intervention_type: "distractor_fixation".to_string(),
                 reason: "Excessive detail or tangential content detected".to_string(),
             });
-        } 
+        }
         // Check quality degradation patterns
         else if !degradation_analysis.degradation_patterns.is_empty() {
             // Find the most severe pattern
-            let most_severe = degradation_analysis.degradation_patterns.iter()
+            let most_severe = degradation_analysis
+                .degradation_patterns
+                .iter()
                 .max_by_key(|p| match p {
                     DegradationPattern::CognitiveFatigue { .. } => 4,
                     DegradationPattern::ReasoningSimplification { .. } => 3,
                     DegradationPattern::CoherenceBreakdown { .. } => 2,
                     DegradationPattern::VocabularyDecline { .. } => 1,
                 });
-            
+
             if let Some(pattern) = most_severe {
                 match pattern {
                     DegradationPattern::CognitiveFatigue { .. } => {
@@ -283,7 +301,10 @@ impl MetacognitiveMonitor {
                     }
                     DegradationPattern::ReasoningSimplification { .. } => {
                         phase = "simplifying".to_string();
-                        intervention = Some("Your reasoning is becoming simplified. Return to deeper analysis.".to_string());
+                        intervention = Some(
+                            "Your reasoning is becoming simplified. Return to deeper analysis."
+                                .to_string(),
+                        );
                         self.intervention_history.push(InterventionRecord {
                             thought_number,
                             intervention_type: "reasoning_simplification".to_string(),
@@ -314,7 +335,7 @@ impl MetacognitiveMonitor {
 
         (phase, intervention)
     }
-    
+
     fn determine_intervention(
         &mut self,
         circular_score: f64,
@@ -325,9 +346,11 @@ impl MetacognitiveMonitor {
         let mut phase = "exploration".to_string();
         let mut intervention = None;
 
-        if circular_score > 0.5 {  // Lowered threshold to match updated detection
+        if circular_score > 0.5 {
+            // Lowered threshold to match updated detection
             phase = "overthinking".to_string();
-            intervention = Some("Consider breaking out of this loop with a new perspective.".to_string());
+            intervention =
+                Some("Consider breaking out of this loop with a new perspective.".to_string());
             self.intervention_history.push(InterventionRecord {
                 thought_number,
                 intervention_type: "circular_reasoning".to_string(),
@@ -343,7 +366,9 @@ impl MetacognitiveMonitor {
             });
         } else if quality_trend == "degrading" {
             phase = "fatigue".to_string();
-            intervention = Some("Quality declining. Consider consolidating insights and concluding.".to_string());
+            intervention = Some(
+                "Quality declining. Consider consolidating insights and concluding.".to_string(),
+            );
             self.intervention_history.push(InterventionRecord {
                 thought_number,
                 intervention_type: "quality_degradation".to_string(),
@@ -354,15 +379,16 @@ impl MetacognitiveMonitor {
         (phase, intervention)
     }
 
-
     pub fn get_status(&self) -> MonitoringStatus {
         let latest_quality = self.quality_scores.back().cloned().unwrap_or(0.5);
         let quality_trend = if self.quality_scores.len() >= 3 {
             // Calculate trend without mutating
             let recent: Vec<_> = self.quality_scores.iter().cloned().collect();
-            let avg_first_half = recent[..recent.len()/2].iter().sum::<f64>() / (recent.len()/2) as f64;
-            let avg_second_half = recent[recent.len()/2..].iter().sum::<f64>() / (recent.len() - recent.len()/2) as f64;
-            
+            let avg_first_half =
+                recent[..recent.len() / 2].iter().sum::<f64>() / (recent.len() / 2) as f64;
+            let avg_second_half = recent[recent.len() / 2..].iter().sum::<f64>()
+                / (recent.len() - recent.len() / 2) as f64;
+
             if avg_second_half < avg_first_half * 0.8 {
                 "degrading".to_string()
             } else if avg_second_half > avg_first_half * 1.2 {
@@ -382,7 +408,7 @@ impl MetacognitiveMonitor {
             quality_metrics: QualityMetrics {
                 coherence: latest_quality,
                 information_density: 0.5, // Placeholder
-                relevance: 0.8, // Placeholder
+                relevance: 0.8,           // Placeholder
                 trend: quality_trend,
             },
             intervention_history: self.intervention_history.clone(),
@@ -393,7 +419,7 @@ impl MetacognitiveMonitor {
         // Simple cognitive load based on thought complexity and history
         let thought_count = self.thought_history.len() as f64;
         let intervention_count = self.intervention_history.len() as f64;
-        
+
         ((thought_count / 10.0) + (intervention_count / 5.0)).min(1.0)
     }
 
@@ -405,7 +431,7 @@ impl MetacognitiveMonitor {
                 "distractor_fixation" => "distracted".to_string(),
                 "quality_degradation" => "fatigue".to_string(),
                 _ => "development".to_string(),
-            }
+            },
         }
     }
 }
@@ -413,47 +439,51 @@ impl MetacognitiveMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_circular_reasoning_detection() {
         let mut monitor = MetacognitiveMonitor::new();
-        
+
         // First thought
-        let signals1 = monitor.analyze_thought("Understanding recursion requires understanding recursion", 1);
+        let signals1 = monitor.analyze_thought(
+            "Understanding recursion requires understanding recursion",
+            1,
+        );
         assert!(signals1.circular_score < 0.5); // First occurrence shouldn't be circular
-        
+
         // Similar thought - should trigger circular reasoning
-        let signals2 = monitor.analyze_thought("To understand recursion, you must understand recursion", 2);
+        let signals2 =
+            monitor.analyze_thought("To understand recursion, you must understand recursion", 2);
         assert!(signals2.circular_score > 0.5); // Should detect similarity (adjusted for conceptual detection)
         assert!(signals2.intervention.is_some());
     }
-    
+
     #[test]
     fn test_quality_degradation() {
         let mut monitor = MetacognitiveMonitor::new();
-        
+
         // Good quality thought
         monitor.analyze_thought("TCP/IP is a protocol suite that enables reliable network communication through packet switching and hierarchical addressing", 1);
-        
+
         // Degrading quality
         monitor.analyze_thought("TCP/IP is like, you know, network stuff", 2);
         monitor.analyze_thought("It's just networking", 3);
-        
+
         let signals = monitor.analyze_thought("Network things", 4);
         assert_eq!(signals.quality_trend, "degrading");
     }
-    
+
     #[test]
     fn test_session_reset() {
         let mut monitor = MetacognitiveMonitor::new();
-        
+
         // Add some thoughts
         monitor.analyze_thought("First thought", 1);
         monitor.analyze_thought("Second thought", 2);
-        
+
         // Reset session
         monitor.reset_session();
-        
+
         // Same thought should not be circular after reset
         let signals = monitor.analyze_thought("First thought", 1);
         assert!(signals.circular_score < 0.5);
