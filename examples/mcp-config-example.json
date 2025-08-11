@@ -1,0 +1,16 @@
+{
+  "lux": {
+    "command": "./target/release/lux-mcp",
+    "env": {
+      "OPENAI_API_KEY": "your-openai-api-key-here",
+      "OPENROUTER_API_KEY": "your-openrouter-api-key-here",
+      "LUX_MODEL_REASONING": "gpt-5",
+      "LUX_MODEL_NORMAL": "gpt-5",
+      "LUX_MODEL_MINI": "gpt-5-mini",
+      "LUX_MODEL_OPUS": "anthropic/claude-4.1-opus",
+      "LUX_MODEL_SONNET": "anthropic/claude-4-sonnet",
+      "LUX_MODEL_GROK": "x-ai/grok-beta",
+      "RUST_LOG": "info"
+    }
+  }
+}

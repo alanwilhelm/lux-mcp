@@ -1,6 +1,18 @@
-# Environment variables
+# Environment variables and sensitive configs
 .env
+.env.*
 .env.local
+*.env
+
+# MCP and Claude configs (may contain API keys)
+.mcp.json
+.claude/
+claude_code_config*.json
+*_config.json
+
+# Temporary and local files
+_temp/
+_archive/
 
 # Rust build artifacts
 /target/
@@ -29,3 +41,6 @@ context_helper.txt
 simple_test.sh
 run_traced_reasoning_mini.sh
 verify_gpt5_tokens.sh
+
+# Research and experiments
+research/

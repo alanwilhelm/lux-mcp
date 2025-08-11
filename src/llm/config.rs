@@ -1,11 +1,14 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::fmt;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
-    // API Keys
+    // API Keys - never serialize these for security
+    #[serde(skip_serializing)]
     pub openai_api_key: Option<String>,
+    #[serde(skip_serializing)]
     pub openrouter_api_key: Option<String>,
 
     // Simplified model configuration
@@ -105,5 +108,25 @@ impl Default for LLMConfig {
             request_timeout_secs: 30,
             max_retries: 3,
         }
+    }
+}
+
+// Custom Debug implementation that redacts API keys for security
+impl fmt::Debug for LLMConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LLMConfig")
+            .field("openai_api_key", &self.openai_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("openrouter_api_key", &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("model_reasoning", &self.model_reasoning)
+            .field("model_normal", &self.model_normal)
+            .field("model_mini", &self.model_mini)
+            .field("model_opus", &self.model_opus)
+            .field("model_sonnet", &self.model_sonnet)
+            .field("model_grok", &self.model_grok)
+            .field("openai_base_url", &self.openai_base_url)
+            .field("openrouter_base_url", &self.openrouter_base_url)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("max_retries", &self.max_retries)
+            .finish()
     }
 }

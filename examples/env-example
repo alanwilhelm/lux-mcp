@@ -1,0 +1,27 @@
+# Lux MCP Environment Configuration Example
+# Copy this file to .env and add your actual API keys
+
+# Required: At least one API key must be configured
+OPENAI_API_KEY=your-openai-api-key-here
+OPENROUTER_API_KEY=your-openrouter-api-key-here
+
+# Model Configuration (defaults shown)
+LUX_MODEL_REASONING=gpt-5
+LUX_MODEL_NORMAL=gpt-5
+LUX_MODEL_MINI=gpt-5-mini
+
+# Named Model Aliases (for convenience)
+LUX_MODEL_OPUS=anthropic/claude-4.1-opus
+LUX_MODEL_SONNET=anthropic/claude-4-sonnet
+LUX_MODEL_GROK=x-ai/grok-beta
+
+# Optional: Custom API endpoints
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+
+# Optional: Request settings
+# LUX_REQUEST_TIMEOUT_SECS=30
+# LUX_MAX_RETRIES=3
+
+# Optional: Logging level
+RUST_LOG=info
