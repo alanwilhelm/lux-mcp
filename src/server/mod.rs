@@ -5,7 +5,10 @@ use crate::llm::LLMConfig;
 use crate::metachain::MetachainEngine;
 use crate::session::SessionManager;
 use crate::threading::{QualityThreadIntegration, SynthesisThreadIntegration, ThreadManager};
-use crate::tools::{BiasedReasoningTool, ChatTool, PlannerTool, TracedReasoningTool};
+use crate::tools::{
+    BiasedReasoningTool, ChatTool, HybridBiasedReasoningTool, PlannerTool,
+    SequentialThinkingExternalTool, SequentialThinkingTool, TracedReasoningTool,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -15,6 +18,9 @@ pub struct LuxServer {
     traced_reasoning_tool: Arc<Mutex<TracedReasoningTool>>,
     biased_reasoning_tool: Arc<BiasedReasoningTool>,
     planner_tool: Arc<Mutex<PlannerTool>>,
+    sequential_thinking_tool: Arc<SequentialThinkingTool>,
+    sequential_thinking_external_tool: Arc<SequentialThinkingExternalTool>,
+    hybrid_biased_reasoning_tool: Arc<HybridBiasedReasoningTool>,
     metachain: Arc<MetachainEngine>,
     session_manager: Arc<SessionManager>,
     thread_manager: Arc<ThreadManager>,
@@ -45,6 +51,9 @@ impl LuxServer {
             config.clone(),
             session_manager.clone(),
         )?));
+        let sequential_thinking_tool = Arc::new(SequentialThinkingTool::new());
+        let sequential_thinking_external_tool = Arc::new(SequentialThinkingExternalTool::new());
+        let hybrid_biased_reasoning_tool = Arc::new(HybridBiasedReasoningTool::new());
         let metachain = Arc::new(MetachainEngine::new());
 
         // Initialize database service if DATABASE_URL is set
@@ -70,6 +79,9 @@ impl LuxServer {
             traced_reasoning_tool,
             biased_reasoning_tool,
             planner_tool,
+            sequential_thinking_tool,
+            sequential_thinking_external_tool,
+            hybrid_biased_reasoning_tool,
             metachain,
             session_manager,
             thread_manager,

@@ -450,3 +450,356 @@ conport_memory_strategy:
 5. **RAG Enhancement**: Dynamic context retrieval strategy for better question answering using ConPort data.
 
 6. **Knowledge Graph Building**: Proactive identification and creation of relationships between ConPort items.
+
+---
+
+# Lux MCP Tools - File Context Management
+
+## CRITICAL: Understanding Independent File Context for Lux MCP
+
+All Lux MCP tools that interact with external LLMs have the capability to read files directly from the filesystem. This is a FUNDAMENTAL feature that enables true independent verification and context isolation from the host agent (Claude).
+
+## Why Independent File Context Matters
+
+When Claude uses these tools, the external LLMs receive their own copy of file contents, not Claude's interpretation. This ensures:
+
+1. **True Independence**: External models see raw file contents
+2. **Unbiased Verification**: No interpretation layer between files and external LLM
+3. **Context Isolation**: Each tool maintains its own file context
+4. **Session Persistence**: Files are cached per session for efficiency
+
+## Tools with File Reading Capability
+
+### 1. confer (Simple Chat with File Context)
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Analyze this code for security issues",
+    "file_paths": [
+      "/project/src/auth.py",
+      "/project/src/database.py"
+    ],
+    "model": "gpt-5",
+    "include_file_contents": true
+  }
+}
+```
+
+### 2. hybrid_biased_reasoning (Bias Detection with File Context)
+```json
+{
+  "tool": "hybrid_biased_reasoning",
+  "arguments": {
+    "reasoning_step": "This code is secure",
+    "file_paths": [
+      "/project/src/security.py"
+    ],
+    "context": "Security audit",
+    "session_id": "security-review"
+  }
+}
+```
+
+## ESSENTIAL PATTERNS FOR CLAUDE
+
+### Pattern 1: Always Include Relevant Files
+
+When reasoning about code, documents, or data, ALWAYS include the relevant files:
+
+```json
+// BAD - No context for the external LLM
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Is this function optimized?"
+  }
+}
+
+// GOOD - External LLM can see the actual function
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Is this function optimized?",
+    "file_paths": ["/project/src/algorithm.py"]
+  }
+}
+```
+
+### Pattern 2: Use Sessions for Multi-Step Analysis
+
+For related queries, use the same session_id to leverage cached files:
+
+```json
+// Step 1 - Files are loaded and cached
+{
+  "tool": "hybrid_biased_reasoning",
+  "arguments": {
+    "reasoning_step": "Step 1 analysis",
+    "file_paths": ["/large/file1.py", "/large/file2.py"],
+    "session_id": "review-123"
+  }
+}
+
+// Step 2 - Files are already cached, no re-reading needed
+{
+  "tool": "hybrid_biased_reasoning",
+  "arguments": {
+    "reasoning_step": "Step 2 analysis",
+    "session_id": "review-123"  // Same session, files already loaded
+  }
+}
+```
+
+### Pattern 3: Provide Context Beyond Files
+
+Files provide data, but context explains purpose:
+
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Review this authentication system. Key concerns: SQL injection, timing attacks, password storage. The system handles 10K requests/second.",
+    "file_paths": [
+      "/project/auth/login.py",
+      "/project/auth/password.py",
+      "/project/auth/session.py"
+    ]
+  }
+}
+```
+
+### Pattern 4: Handle Large Codebases
+
+For large codebases, be selective about which files to include:
+
+```json
+// Include only relevant files, not entire directories
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Analyze the payment processing flow",
+    "file_paths": [
+      "/project/payments/processor.py",      // Core logic
+      "/project/payments/validation.py",     // Input validation
+      "/project/models/transaction.py",      // Data model
+      "/project/config/payment_config.py"    // Configuration
+    ]
+  }
+}
+```
+
+## FILE HANDLING SPECIFICATIONS
+
+### File Size Limits
+- **confer**: Files > 10,000 characters are truncated
+- **hybrid_biased_reasoning**: Files > 5,000 characters are truncated
+- Truncation includes `... [truncated]` marker
+
+### File Reading Behavior
+- **Missing Files**: Logged but don't stop execution
+- **Directories**: Skipped (only files are read)
+- **Binary Files**: Skipped (text files only)
+- **Permissions**: Files without read permission are skipped
+
+### Session Management
+- **Default Session**: Used when no session_id provided
+- **Session Lifetime**: Until server restart or explicit clear
+- **File Caching**: Per session, not global
+- **Memory Management**: Old sessions cleared periodically
+
+## CRITICAL INSTRUCTIONS FOR CLAUDE
+
+When using Lux MCP tools, you MUST:
+
+1. **ALWAYS include file_paths when discussing code/documents**
+   - The external LLM cannot see your context
+   - It needs the actual files to provide accurate analysis
+
+2. **Use descriptive messages that reference the files**
+   ```json
+   // GOOD - Clear reference to what's in the files
+   {
+     "message": "Review the authenticate() function in auth.py for timing attacks",
+     "file_paths": ["/project/auth.py"]
+   }
+   
+   // BAD - Vague, no connection to files
+   {
+     "message": "Check for timing attacks",
+     "file_paths": ["/project/auth.py"]
+   }
+   ```
+
+3. **Maintain session continuity for related queries**
+   - Use the same session_id for related analysis
+   - Files are cached, improving performance
+   - Context builds across the session
+
+4. **Include all relevant files upfront**
+   - Don't assume the LLM knows about dependencies
+   - Include imported modules if relevant
+   - Include configuration files if they affect behavior
+
+5. **Specify include_file_contents explicitly when needed**
+   - Default is true, but be explicit for clarity
+   - Set to false only when you want to reference files without reading
+
+## EXAMPLE WORKFLOWS
+
+### Workflow 1: Code Security Audit
+
+```json
+// Step 1: Initial security assessment with all relevant files
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Perform initial security assessment focusing on: authentication, authorization, input validation, and data protection",
+    "file_paths": [
+      "/app/auth/login.py",
+      "/app/auth/permissions.py",
+      "/app/middleware/security.py",
+      "/app/models/user.py",
+      "/app/config/security_config.py"
+    ],
+    "model": "gpt-5",
+    "session_id": "security-audit-2024"
+  }
+}
+
+// Step 2: Check for bias in security conclusions
+{
+  "tool": "hybrid_biased_reasoning",
+  "arguments": {
+    "reasoning_step": "The authentication system is secure because it uses JWT tokens and bcrypt hashing",
+    "file_paths": [
+      "/app/auth/login.py",
+      "/app/auth/token_manager.py"
+    ],
+    "context": "Security audit findings",
+    "session_id": "security-audit-2024",
+    "bias_types": ["confirmation_bias", "overconfidence", "missing_context"]
+  }
+}
+```
+
+### Workflow 2: Architecture Review
+
+```json
+// Step 1: Understand the current architecture
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Analyze the microservices architecture: service boundaries, communication patterns, data flow, and potential bottlenecks",
+    "file_paths": [
+      "/architecture/services.yaml",
+      "/architecture/api_gateway.py",
+      "/services/user_service/main.py",
+      "/services/order_service/main.py",
+      "/services/payment_service/main.py",
+      "/docker-compose.yml"
+    ],
+    "model": "o3-pro"
+  }
+}
+
+// Step 2: Verify architectural claims
+{
+  "tool": "hybrid_biased_reasoning",
+  "arguments": {
+    "reasoning_step": "This microservices architecture provides good separation of concerns and scalability",
+    "file_paths": [
+      "/architecture/services.yaml",
+      "/docker-compose.yml"
+    ],
+    "previous_steps": [
+      "Identified 5 microservices with REST communication",
+      "Found shared database between user and order services"
+    ],
+    "bias_check_model": "gpt-4o"
+  }
+}
+```
+
+### Workflow 3: Performance Analysis
+
+```json
+// Analyze performance-critical code with full context
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Analyze the performance of this data processing pipeline. Consider: algorithmic complexity, memory usage, I/O patterns, parallelization opportunities, and caching strategies",
+    "file_paths": [
+      "/pipeline/data_processor.py",
+      "/pipeline/transformers.py",
+      "/pipeline/cache_manager.py",
+      "/tests/performance_test.py",
+      "/config/pipeline_config.yaml"
+    ],
+    "model": "gpt-5",
+    "temperature": 0.3
+  }
+}
+```
+
+## ERROR HANDLING
+
+### File Not Found
+- Tool continues execution
+- Logs warning but doesn't fail
+- Returns analysis based on available files
+
+### File Too Large
+- Automatic truncation applied
+- Truncation noted in context
+- Most important parts (beginning) preserved
+
+### Permission Denied
+- File skipped
+- Warning logged
+- Continues with other files
+
+## BEST PRACTICES FOR LUX MCP
+
+### DO:
+1. **Include all files mentioned in your reasoning**
+2. **Use session IDs for multi-step analysis**
+3. **Provide clear context about what's in the files**
+4. **Include test files when analyzing code quality**
+5. **Include config files when analyzing behavior**
+6. **Be selective with large codebases**
+7. **Group related queries in sessions**
+
+### DON'T:
+1. **Don't assume the LLM knows your context**
+2. **Don't include entire repositories**
+3. **Don't mix unrelated queries in one session**
+4. **Don't forget configuration files**
+5. **Don't include binary or media files**
+6. **Don't rely on file paths alone - add context**
+
+## MONITORING AND DEBUGGING
+
+### Check Session Status
+For hybrid_biased_reasoning, you can check session status:
+- Files in context
+- Number of bias checks performed
+- Average bias score
+- Session history
+
+### Performance Optimization
+- Reuse sessions to avoid re-reading files
+- Include only necessary files
+- Use appropriate truncation limits
+
+## SUMMARY
+
+The file reading capability in Lux MCP tools is not an optional feature - it's ESSENTIAL for proper operation. External LLMs need to see the actual files to provide accurate analysis, not just descriptions or summaries. Always include relevant file paths, maintain session continuity, and provide clear context about what the files contain and why they're relevant to the query.
+
+This ensures:
+1. **Accurate Analysis**: Based on real code/data
+2. **Independent Verification**: No interpretation bias
+3. **Efficient Operation**: Session-based caching
+4. **Complete Context**: LLMs see what they need
+
+Remember: The external LLMs are isolated from your context. They only know what you explicitly provide through files and messages.

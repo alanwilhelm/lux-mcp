@@ -1,11 +1,17 @@
+use super::LLMConfig;
 use std::collections::HashMap;
 
 pub struct ModelResolver {
     aliases: HashMap<String, String>,
+    config: Option<LLMConfig>,
 }
 
 impl ModelResolver {
     pub fn new() -> Self {
+        Self::with_config(None)
+    }
+
+    pub fn with_config(config: Option<LLMConfig>) -> Self {
         let mut aliases = HashMap::new();
 
         // Basic GPT-4 variants
@@ -24,7 +30,9 @@ impl ModelResolver {
         aliases.insert("gpt5".to_string(), "gpt-5".to_string());
         aliases.insert("gpt-5".to_string(), "gpt-5".to_string());
         aliases.insert("5".to_string(), "gpt-5".to_string());
-        
+        aliases.insert("gpt5-mini".to_string(), "gpt-5-mini".to_string());
+        aliases.insert("gpt5mini".to_string(), "gpt-5-mini".to_string());
+
         // O3 variants - map to full model names
         aliases.insert("o3".to_string(), "o3".to_string());
         aliases.insert("o3-pro".to_string(), "o3-pro-2025-06-10".to_string());
@@ -50,14 +58,14 @@ impl ModelResolver {
             "claude-3".to_string(),
             "anthropic/claude-3-opus".to_string(),
         );
-        aliases.insert("opus".to_string(), "anthropic/claude-4-opus".to_string());
+        aliases.insert("opus".to_string(), "anthropic/claude-4.1-opus".to_string());
         aliases.insert(
             "claude-opus".to_string(),
             "anthropic/claude-3-opus".to_string(),
         );
         aliases.insert(
             "sonnet".to_string(),
-            "anthropic/claude-3-sonnet".to_string(),
+            "anthropic/claude-4-sonnet".to_string(),
         );
         aliases.insert(
             "claude-sonnet".to_string(),
@@ -208,10 +216,32 @@ impl ModelResolver {
             "deepseek/deepseek-coder".to_string(),
         );
 
-        Self { aliases }
+        Self { aliases, config }
     }
 
     pub fn resolve(&self, input: &str) -> String {
+        // First check for custom model definitions from config
+        if let Some(ref config) = self.config {
+            match input.to_lowercase().as_str() {
+                "opus" => {
+                    if let Some(ref model) = config.model_opus {
+                        return model.clone();
+                    }
+                }
+                "sonnet" => {
+                    if let Some(ref model) = config.model_sonnet {
+                        return model.clone();
+                    }
+                }
+                "grok" => {
+                    if let Some(ref model) = config.model_grok {
+                        return model.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Convert to lowercase and remove common separators for lookup
         let normalized = input
             .to_lowercase()
@@ -219,7 +249,7 @@ impl ModelResolver {
             .replace('_', "")
             .replace(' ', "");
 
-        // First check exact match
+        // Check exact match
         if let Some(resolved) = self.aliases.get(input) {
             return resolved.clone();
         }
@@ -255,6 +285,8 @@ impl ModelResolver {
         input.to_string()
     }
 
+    // (old policy removed)
+
     fn strip_date_suffix(&self, model: &str) -> String {
         // Remove date suffixes like -20241022 or -latest
         if let Some(idx) = model.rfind('-') {
@@ -270,6 +302,17 @@ impl ModelResolver {
     pub fn is_openrouter_model(&self, model: &str) -> bool {
         let resolved = self.resolve(model);
         resolved.contains('/')
+    }
+
+    /// Returns true if the model is allowed by strict policy (GPT-5 family only: gpt-5, gpt-5-mini)
+    pub fn is_allowed_model(&self, model: &str) -> bool {
+        let resolved = self.resolve(model).to_lowercase();
+        resolved == "gpt-5" || resolved == "gpt-5-mini"
+    }
+
+    /// Returns true if a model is blocked by policy (anything not strictly allowed)
+    pub fn is_blocked_model(&self, model: &str) -> bool {
+        !self.is_allowed_model(model)
     }
 
     pub fn suggest_similar(&self, input: &str) -> Vec<String> {
@@ -310,8 +353,8 @@ mod tests {
 
         // Test Claude
         assert_eq!(resolver.resolve("claude"), "anthropic/claude-4-sonnet");
-        assert_eq!(resolver.resolve("opus"), "anthropic/claude-4-opus");
-        assert_eq!(resolver.resolve("sonnet"), "anthropic/claude-3-sonnet");
+        assert_eq!(resolver.resolve("opus"), "anthropic/claude-4.1-opus");
+        assert_eq!(resolver.resolve("sonnet"), "anthropic/claude-4-sonnet");
         assert_eq!(
             resolver.resolve("claude-3.5"),
             "anthropic/claude-3.5-sonnet"

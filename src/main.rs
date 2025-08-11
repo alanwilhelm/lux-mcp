@@ -69,16 +69,19 @@ async fn main() -> Result<()> {
 
     // Load config to show model defaults
     let config = llm::config::LLMConfig::from_env()?;
-    info!("Default Models:");
-    info!("  Chat (confer): {}", config.default_chat_model);
-    info!(
-        "  Reasoning (traced_reasoning): {}",
-        config.default_reasoning_model
-    );
-    info!(
-        "  Bias Checker (biased_reasoning): {}",
-        config.default_bias_checker_model
-    );
+    info!("Model Configuration:");
+    info!("  Reasoning Model: {}", config.model_reasoning);
+    info!("  Normal Model: {}", config.model_normal);
+    info!("  Mini Model: {}", config.model_mini);
+    if let Some(ref opus) = config.model_opus {
+        info!("  Opus Model: {}", opus);
+    }
+    if let Some(ref sonnet) = config.model_sonnet {
+        info!("  Sonnet Model: {}", sonnet);
+    }
+    if let Some(ref grok) = config.model_grok {
+        info!("  Grok Model: {}", grok);
+    }
 
     // Create the server
     let server = LuxServer::new().await?;

@@ -37,7 +37,7 @@ Simple conversational AI with model selection and threading support.
 ```json
 {
   "message": "string",           // Required: The message to send
-  "model": "string",             // Optional: Model to use (default: LUX_DEFAULT_CHAT_MODEL)
+  "model": "string",             // Optional: Model to use (default: LUX_MODEL_NORMAL)
   "temperature": "number",       // Optional: Temperature 0.0-1.0 (default: 0.7)
   "max_tokens": "integer",       // Optional: Max tokens for response (default: 10000)
   "continuation_id": "string"    // Optional: Thread ID for conversation continuity
@@ -89,7 +89,7 @@ Step-by-step reasoning with metacognitive monitoring and synthesis tracking.
   
   "continuation_id": "string",            // Optional: Thread ID for continuity
   "session_id": "string",                 // Optional: Session ID for monitoring
-  "model": "string",                      // Optional: Model to use (default: LUX_DEFAULT_REASONING_MODEL)
+  "model": "string",                      // Optional: Model to use (default: LUX_MODEL_REASONING)
   "temperature": "number",                // Optional: Temperature (default: 0.7)
   
   "is_revision": "boolean",               // Optional: True if revising a previous thought
@@ -435,53 +435,6 @@ pub struct MetacognitiveMonitor {
 
 ---
 
-## Database Integration
-
-Optional persistence layer using SeaORM.
-
-### Schema
-
-#### Sessions Table
-```sql
-CREATE TABLE sessions (
-    id UUID PRIMARY KEY,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    metadata JSONB
-);
-```
-
-#### Reasoning Steps Table
-```sql
-CREATE TABLE reasoning_steps (
-    id UUID PRIMARY KEY,
-    session_id UUID REFERENCES sessions(id),
-    step_number INTEGER,
-    content TEXT,
-    step_type VARCHAR(50),
-    metrics JSONB,
-    created_at TIMESTAMP
-);
-```
-
-#### Thread Checkpoints
-Stored in custom_data table with category "thread_checkpoints".
-
-### DatabaseService
-```rust
-pub struct DatabaseService {
-    db: DatabaseConnection,
-}
-
-// Key methods:
-- log_reasoning_step(session_id, step_data) -> Result<()>
-- log_synthesis_state(session_id, synthesis) -> Result<()>
-- log_custom_data(category, key, value) -> Result<()>
-- get_session_history(session_id) -> Result<Vec<ReasoningStep>>
-```
-
----
-
 ## Configuration
 
 ### Environment Variables
@@ -490,13 +443,15 @@ pub struct DatabaseService {
 - `OPENAI_API_KEY`: For OpenAI models
 - `OPENROUTER_API_KEY`: For OpenRouter models
 
-#### Optional Model Defaults
-- `LUX_DEFAULT_CHAT_MODEL`: Default for confer (default: "gpt-4o")
-- `LUX_DEFAULT_REASONING_MODEL`: Default for traced_reasoning (default: "o3-pro")
-- `LUX_DEFAULT_BIAS_CHECKER_MODEL`: Default for bias checking (default: "o4-mini")
+#### Model Configuration
+- `LUX_MODEL_REASONING`: Main reasoning model (default: "gpt-5")
+- `LUX_MODEL_NORMAL`: Main normal model (default: "gpt-5")
+- `LUX_MODEL_MINI`: Mini model for fast tasks (default: "gpt-5-mini")
 
-#### Optional Database
-- `DATABASE_URL`: PostgreSQL connection string for persistence
+#### Named Model Aliases (Optional)
+- `LUX_MODEL_OPUS`: Maps 'opus' to specific model (default: "anthropic/claude-4.1-opus")
+- `LUX_MODEL_SONNET`: Maps 'sonnet' to specific model (default: "anthropic/claude-4-sonnet")
+- `LUX_MODEL_GROK`: Maps 'grok' to specific model (default: "x-ai/grok-beta")
 
 #### Logging
 - `RUST_LOG`: Log level (error, warn, info, debug, trace)
@@ -522,7 +477,9 @@ pub struct DatabaseService {
       "command": "/path/to/lux-mcp",
       "env": {
         "OPENAI_API_KEY": "sk-...",
-        "LUX_DEFAULT_REASONING_MODEL": "o3-pro",
+        "LUX_MODEL_REASONING": "gpt-5",
+        "LUX_MODEL_NORMAL": "gpt-5",
+        "LUX_MODEL_MINI": "gpt-5-mini",
         "RUST_LOG": "info"
       }
     }
@@ -661,12 +618,7 @@ response3 = call_tool("traced_reasoning", {
    - Ensure continuation_id is passed correctly
    - Check thread hasn't expired (3 hour TTL)
 
-4. **Database not logging**
-   - Verify DATABASE_URL is set
-   - Check PostgreSQL is running
-   - Run migrations: `sea-orm-cli migrate up`
-
-5. **Model not found errors**
+4. **Model not found errors**
    - Check API key is set for the provider
    - Verify model name or use an alias
    - Some models require specific API access

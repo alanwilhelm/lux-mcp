@@ -1,5 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -24,6 +26,19 @@ pub struct ChatRequest {
     pub session_id: Option<String>,
     #[serde(default)]
     pub continuation_id: Option<String>,
+    /// File paths to include in context for the LLM
+    #[serde(default)]
+    pub file_paths: Option<Vec<String>>,
+    /// Whether to include file contents (default: true)
+    #[serde(default = "default_true")]
+    pub include_file_contents: bool,
+    /// Use mini model for cost savings (overrides model selection)
+    #[serde(default)]
+    pub use_mini: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,14 +63,44 @@ pub struct ChatTool {
 }
 
 impl ChatTool {
+    /// Read files and return their contents
+    fn read_files(&self, file_paths: &[String]) -> Vec<(String, String)> {
+        let mut file_contents = Vec::new();
+
+        for path in file_paths {
+            let file_path = Path::new(path);
+            if file_path.exists() && file_path.is_file() {
+                match fs::read_to_string(file_path) {
+                    Ok(content) => {
+                        info!("Read file for chat context: {}", path);
+                        // Truncate very large files to avoid token limits
+                        let truncated = if content.len() > 10000 {
+                            format!("{}... [truncated]", &content[..10000])
+                        } else {
+                            content
+                        };
+                        file_contents.push((path.clone(), truncated));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read file {}: {}", path, e);
+                    }
+                }
+            } else {
+                info!("File not found or not a file: {}", path);
+            }
+        }
+
+        file_contents
+    }
+
     pub fn new(config: LLMConfig) -> Result<Self> {
-        let model_resolver = ModelResolver::new();
+        let model_resolver = ModelResolver::with_config(Some(config.clone()));
 
         // Initialize OpenAI client if API key is available
         let openai_client = if let Some(api_key) = &config.openai_api_key {
             let client = OpenAIClient::new(
                 api_key.clone(),
-                config.default_chat_model.clone(),
+                config.model_normal.clone(),
                 config.openai_base_url.clone(),
             )?;
             Some(Arc::new(client) as Arc<dyn LLMClient>)
@@ -98,21 +143,36 @@ impl ChatTool {
 
     pub async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
         info!(
-            "Chat request received - Message: {}, Model: {:?}, Temperature: {:?}",
-            request.message, request.model, request.temperature
+            "Chat request received - Message: {}, Model: {:?}, Temperature: {:?}, File paths: {:?}",
+            request.message, request.model, request.temperature, request.file_paths
         );
 
-        // Resolve model alias
-        let requested_model = request
-            .model
-            .as_ref()
-            .map(|m| self.model_resolver.resolve(m))
-            .unwrap_or_else(|| self.config.default_chat_model.clone());
+        // Resolve model alias - use mini model if requested for cost savings
+        let requested_model = if request.use_mini {
+            self.config.model_mini.clone()
+        } else {
+            request
+                .model
+                .as_ref()
+                .map(|m| self.model_resolver.resolve(m))
+                .unwrap_or_else(|| self.config.model_normal.clone())
+        };
 
         info!(
-            "Resolved model: {} (requested: {:?}, default: {})",
-            requested_model, request.model, self.config.default_chat_model
+            "Resolved model: {} (requested: {:?}, use_mini: {}, default: {})",
+            requested_model, request.model, request.use_mini, self.config.model_normal
         );
+
+        // If requested model is blocked (e.g., gpt-4o family), switch to default immediately
+        let requested_model = if self.model_resolver.is_blocked_model(&requested_model) {
+            warn!(
+                "Requested model '{}' is blocked by policy. Using default '{}' instead.",
+                requested_model, self.config.model_normal
+            );
+            self.config.model_normal.clone()
+        } else {
+            requested_model
+        };
 
         // Define fallback models in order of preference
         let fallback_models = self.get_fallback_models(&requested_model);
@@ -169,32 +229,17 @@ impl ChatTool {
     }
 
     fn get_fallback_models(&self, requested_model: &str) -> Vec<String> {
+        // Strict policy: Only GPT-5 and GPT-5-mini are allowed
         let mut fallbacks = Vec::new();
-
-        // If a Claude model was requested, try other Claude variants
-        if requested_model.contains("claude") {
-            fallbacks.push("anthropic/claude-3.5-sonnet".to_string());
-            fallbacks.push("anthropic/claude-3-opus".to_string());
-            fallbacks.push("anthropic/claude-3-sonnet".to_string());
+        if requested_model != "gpt-5" {
+            fallbacks.push("gpt-5".to_string());
         }
-
-        // Add default model as fallback if not already requested
-        if requested_model != self.config.default_chat_model {
-            fallbacks.push(self.config.default_chat_model.clone());
+        if requested_model != "gpt-5-mini" {
+            fallbacks.push("gpt-5-mini".to_string());
         }
-
-        // Add some reliable fallbacks
-        if !requested_model.contains("gpt-4") {
-            fallbacks.push("gpt-4o-mini".to_string());
-        }
-        if !requested_model.contains("gemini") {
-            fallbacks.push("google/gemini-2.5-flash".to_string());
-        }
-
         // Remove duplicates while preserving order
         let mut seen = std::collections::HashSet::new();
         fallbacks.retain(|model| seen.insert(model.clone()));
-
         fallbacks
     }
 
@@ -214,6 +259,11 @@ impl ChatTool {
             "OpenRouter key available: {}",
             self.config.openrouter_api_key.is_some()
         );
+
+        // Block GPT-4o family explicitly
+        if self.model_resolver.is_blocked_model(&model) {
+            anyhow::bail!("model_not_found: '{}' is blocked by policy", model);
+        }
 
         // Determine which client to use
         let client: Arc<dyn LLMClient> = if self.model_resolver.is_openrouter_model(&model) {
@@ -264,22 +314,50 @@ impl ChatTool {
             }
         };
 
+        // Build message with optional file contents
+        let mut full_message = String::new();
+
+        // Add file contents if provided
+        if let Some(ref file_paths) = request.file_paths {
+            info!("File paths provided: {:?}", file_paths);
+            if request.include_file_contents && !file_paths.is_empty() {
+                info!("Attempting to read {} files", file_paths.len());
+                let file_contents = self.read_files(file_paths);
+                info!("Successfully read {} files", file_contents.len());
+                if !file_contents.is_empty() {
+                    full_message.push_str("=== FILE CONTEXT ===\n");
+                    for (path, content) in file_contents {
+                        full_message.push_str(&format!("\n📄 File: {}\n", path));
+                        full_message.push_str(&format!("```\n{}\n```\n", content));
+                    }
+                    full_message.push_str("\n=== END FILE CONTEXT ===\n\n");
+                    info!("Added {} files to chat context", file_paths.len());
+                }
+            }
+        }
+
+        // Add the actual message
+        full_message.push_str(&request.message);
+
         // Create messages
         let messages = vec![ChatMessage {
             role: Role::User,
-            content: request.message.clone(),
+            content: full_message,
         }];
 
         // ALWAYS USE OPTIMAL INTELLIGENCE - MAXIMUM TOKENS FOR DEEPEST REASONING
         // No user override - always use the maximum for each model
-        let max_tokens = if model == "gpt-5" || model.starts_with("gpt-5-") {
-            128000 // GPT-5: MAXIMUM INTELLIGENCE (128K completion tokens)
+        // Check mini FIRST to handle gpt-5-mini correctly
+        let max_tokens = if model.contains("mini") || model.ends_with("-mini") {
+            16000 // ALL mini models: Respect their 16K limit (including gpt-5-mini)
+        } else if model == "gpt-5" || model.starts_with("gpt-5-") {
+            128000 // GPT-5 full models: MAXIMUM INTELLIGENCE (128K completion tokens)
         } else if model.starts_with("o3") {
             100000 // O3: MAXIMUM REASONING DEPTH
         } else if model.starts_with("o4") {
-            50000  // O4: MAXIMUM FAST REASONING
+            50000 // O4: MAXIMUM FAST REASONING
         } else {
-            20000  // Standard models: MAXIMUM THINKING ROOM
+            20000 // Standard models: MAXIMUM THINKING ROOM
         };
 
         info!(

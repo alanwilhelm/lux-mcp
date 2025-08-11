@@ -45,6 +45,35 @@ cargo test
 cargo doc --open
 ```
 
+## Quick Configuration Setup
+
+### Using setup_config Tool
+
+The easiest way to configure Lux MCP is using the `setup_config` tool. This tool guides you through creating or updating the .env file:
+
+```json
+{
+  "tool": "setup_config",
+  "arguments": {
+    "openai_api_key": "YOUR_KEY_HERE",
+    "openrouter_api_key": "YOUR_KEY_HERE",  // Optional
+    "use_advanced_models": true  // Use GPT-5 (true) or GPT-4o (false)
+  }
+}
+```
+
+**What the tool does:**
+1. Checks if .env file exists
+2. Generates complete configuration template
+3. Provides step-by-step instructions for creating/updating .env
+4. Configures all model preferences automatically
+5. User only needs to provide their API keys
+
+**The tool will instruct you to:**
+- Use Write tool to create .env if it doesn't exist
+- Use Edit tool to update .env if it exists
+- Verify the configuration was saved correctly
+
 ### Testing Tools
 ```bash
 # Test MCP server initialization and basic functionality
@@ -78,7 +107,8 @@ cargo doc --open
 
 ### Core Concepts
 
-1. **Tools** - Three main tools exposed via MCP:
+1. **Tools** - Main tools exposed via MCP:
+   - `setup_config` - Environment configuration helper (guides .env setup)
    - `confer` - Conversational AI with model selection
    - `traced_reasoning` - Metacognitive reasoning with real-time monitoring
    - `biased_reasoning` - Step-by-step dual-model verification with visible bias detection
@@ -104,10 +134,15 @@ Required environment variables (at least one):
 - `OPENAI_API_KEY` - For OpenAI models
 - `OPENROUTER_API_KEY` - For OpenRouter models
 
-Optional defaults:
-- `LUX_DEFAULT_CHAT_MODEL` - Default for confer (default: gpt4.1)
-- `LUX_DEFAULT_REASONING_MODEL` - Default for traced_reasoning (default: o3)
-- `LUX_DEFAULT_BIAS_CHECKER_MODEL` - Default for biased_reasoning verifier (default: o4-mini)
+Model configuration:
+- `LUX_MODEL_REASONING` - Main reasoning model (default: gpt-5)
+- `LUX_MODEL_NORMAL` - Main normal model (default: gpt-5)
+- `LUX_MODEL_MINI` - Mini model for fast tasks (default: gpt-5-mini)
+
+Named model aliases (optional):
+- `LUX_MODEL_OPUS` - Maps 'opus' to specific model (default: anthropic/claude-4.1-opus)
+- `LUX_MODEL_SONNET` - Maps 'sonnet' to specific model (default: anthropic/claude-4-sonnet)
+- `LUX_MODEL_GROK` - Maps 'grok' to specific model (default: x-ai/grok-beta)
 
 ## MCP Protocol Details
 
@@ -200,31 +235,49 @@ Lux MCP now fully supports OpenAI's reasoning models with automatic API detectio
     "env": {
       "OPENAI_API_KEY": "your-openai-key",
       "OPENROUTER_API_KEY": "your-openrouter-key",
-      "LUX_DEFAULT_CHAT_MODEL": "o3-pro",
-      "LUX_DEFAULT_REASONING_MODEL": "o3-pro",
-      "LUX_DEFAULT_BIAS_CHECKER_MODEL": "o4-mini",
+      "LUX_MODEL_REASONING": "gpt-5",
+      "LUX_MODEL_NORMAL": "gpt-5",
+      "LUX_MODEL_MINI": "gpt-5-mini",
+      "LUX_MODEL_OPUS": "anthropic/claude-4.1-opus",
+      "LUX_MODEL_SONNET": "anthropic/claude-4-sonnet",
+      "LUX_MODEL_GROK": "x-ai/grok-beta",
       "RUST_LOG": "info"
     }
   }
 }
 ```
 
-### Interactive Planner Tool
+### GPT-5 Advanced Features
 
-The `planner` tool is an LLM-powered sequential planning system that generates planning steps using AI:
+GPT-5 now uses the **Responses API** with:
+- **Maximum Reasoning**: `reasoning.effort: "high"` for all calls
+- **High Verbosity**: `text.verbosity: "high"` for detailed responses
+- **128K Token Support**: Full 128,000 completion tokens available
+- **Temperature**: Not supported (similar to O3/O4 models)
 
-- **Model**: Uses `LUX_DEFAULT_REASONING_MODEL` (default: o3-pro) to generate each planning step
+### Interactive Planner Tool (Enhanced with File Reading)
+
+The `planner` tool is an AI-powered sequential planning system with **DIRECT FILE ACCESS**:
+
+- **Model**: Uses configured reasoning model (`LUX_MODEL_REASONING`, defaults to gpt-5)
+- **File Reading**: Auto-discovers and examines project files to ground plans in reality
+- **Mandatory Actions**: Returns MANDATORY actions that MUST be executed by the caller
 - **Step 1**: You provide the initial task description
-- **Steps 2+**: The LLM generates planning content based on:
+- **Steps 2+**: The LLM generates ACTIONABLE, IMPLEMENTATION-READY content based on:
   - Previous steps in the planning history
+  - **Actual project files and code structure** (reads files directly)
   - Your guidance for what the step should focus on
   - Whether it's a branch, revision, or normal step
 - **Features**:
-  - Stateful: Maintains planning history across calls
+  - **Auto-Discovery**: Automatically finds relevant project files (README, config, code)
+  - **File Context**: Reads and analyzes actual code/config files (up to 15KB per file)
+  - **Mandatory Actions**: Returns actions you MUST take (marked with ⚠️)
+  - **Implementation-Ready**: Includes specific file paths, function names, commands
+  - **Session File Cache**: Caches files for efficiency across planning steps
+  - Stateful: Maintains planning history and file cache across calls
   - Branching: Explore alternative approaches
   - Revisions: Update earlier steps with new insights
   - Deep thinking pauses for complex plans (≥5 steps)
-  - Metacognitive monitoring for quality
 
 Example usage:
 ```json
@@ -235,11 +288,27 @@ Example usage:
     "step_number": 1,
     "total_steps": 7,
     "next_step_required": true,
-    "model": "o3-pro",  // Optional, defaults to reasoning model
+    "auto_discover_files": true,  // Default: true - auto-find relevant files
+    "file_paths": ["/src/queue.py", "/config.yaml"],  // Optional: specific files
+    "include_file_contents": true,  // Default: true - read file contents
+    "model": "gpt-5",  // Optional, defaults to gpt-5 now (not o3-pro)
     "temperature": 0.7  // Optional, default 0.7
   }
 }
 ```
+
+**Response includes:**
+- `mandatory_actions`: Array of actions you MUST take (e.g., "⚠️ MANDATORY: You MUST examine API route definitions")
+- `files_examined`: Files that were read during planning
+- `recommended_files`: Files to examine for implementation
+- `step_content`: The actual planning step with specific implementation details
+
+**Auto-Discovery Patterns:**
+- Looks for: README.md, package.json, Cargo.toml, requirements.txt, Makefile
+- API planning: Searches for *api*, *route* files
+- Database planning: Searches for *model*, *schema*, migrations
+- Testing: Searches for *test*, *spec* files
+- Security: Searches for *auth*, *security* files
 
 ### All Supported Models (Tested & Working)
 
@@ -283,19 +352,90 @@ The OpenAI client (`src/llm/openai.rs`) automatically detects and routes request
 
 See `TOKEN_LIMITS.md` for detailed configuration information.
 
+## Using Named Models and Cost Optimization
+
+### Named Model Aliases
+You can use simple names for popular models:
+- `"opus"` - Maps to Claude 4.1 Opus (configurable via LUX_MODEL_OPUS)
+- `"sonnet"` - Maps to Claude 4 Sonnet (configurable via LUX_MODEL_SONNET)
+- `"grok"` - Maps to latest Grok (configurable via LUX_MODEL_GROK)
+
+Example:
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Explain quantum computing",
+    "model": "opus"  // Uses Claude 4.1 Opus
+  }
+}
+```
+
+### Cost Savings with Mini Model
+All tools support a `use_mini` parameter for cost-effective operations:
+
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "What's 2+2?",
+    "use_mini": true  // Uses gpt-5-mini instead of gpt-5
+  }
+}
+```
+
+This works for `confer`, `planner`, `traced_reasoning`, and other tools.
+
+## Direct File Access
+
+Lux MCP tools support optional file reading. When you provide file paths, tools read them directly instead of requiring you to pass the contents.
+
+### How It Works
+- Tools accept an optional `file_paths` parameter
+- Files are read directly by the tool (read-only)
+- Saves tokens since you don't need to pass file contents
+- All tools support this feature
+
+### IMPORTANT: How to Use File Reading
+
+**CORRECT** - Pass paths in the `file_paths` array:
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Analyze this code for security issues",
+    "file_paths": ["/path/to/file1.js", "/path/to/file2.py"],
+    "model": "gpt-5"
+  }
+}
+```
+
+**INCORRECT** - Don't just mention files in the message:
+```json
+{
+  "tool": "confer",
+  "arguments": {
+    "message": "Read /path/to/file.js and analyze it",  // ❌ Won't work!
+    "model": "gpt-5"
+  }
+}
+```
+
+The server reads the files and includes their contents automatically!
+
 ## Best Practices for Using Lux Tools
 
-### Passing File Context to External Models
+### Using File Access
 
-Since Lux tools delegate reasoning to external models (o3, gpt-4, etc.) that don't have direct file access, Claude should proactively read and pass relevant file contents when using these tools:
+When tools need file context, you can provide file paths directly:
 
-1. **For `planner` tool** - When planning code-related tasks:
+1. **For `planner` tool**:
    ```json
-   // DO: Read relevant files first
    {
      "tool": "planner",
      "arguments": {
-       "step": "Refactor authentication system\n\nCurrent implementation:\n[FULL CONTENTS OF auth.js HERE]",
+       "step": "Refactor authentication system",
+       "file_paths": ["/app/auth.js", "/app/config.js"],
        "step_number": 1,
        "total_steps": 5,
        "next_step_required": true
@@ -303,13 +443,13 @@ Since Lux tools delegate reasoning to external models (o3, gpt-4, etc.) that don
    }
    ```
 
-2. **For `traced_reasoning` tool** - When debugging or analyzing code:
+2. **For `confer` tool**:
    ```json
-   // DO: Include full file contents in the query
    {
-     "tool": "traced_reasoning", 
+     "tool": "confer", 
      "arguments": {
-       "thought": "Debug why login fails. Here's the current code:\n[FULL CONTENTS OF login.js HERE]\n\nError log:\n[RELEVANT ERROR MESSAGES HERE]",
+       "message": "Debug why login fails",
+       "file_paths": ["/app/login.js", "/logs/error.log"],
        "thought_number": 1,
        "total_thoughts": 5,
        "next_thought_needed": true
@@ -346,3 +486,16 @@ Since Lux tools delegate reasoning to external models (o3, gpt-4, etc.) that don
 - **Specify relationships** - explain how files connect to each other
 
 This approach maximizes the reasoning capabilities of external models while maintaining security boundaries.
+
+## Sequential Thinking Tools
+
+Lux MCP now provides two new sequential thinking tools for step-by-step reasoning:
+
+- **`sequential_thinking`** - Simple state tracker for manual thought organization (no LLM)
+- **`sequential_thinking_external`** - AI-powered sequential reasoning with LLM integration
+
+For comprehensive documentation, see the [docs/](./docs/) directory:
+- [Sequential Thinking Guide](./docs/sequential-thinking.md) - Complete overview and architecture
+- [API Reference](./docs/sequential-thinking-api.md) - Detailed API specifications
+- [Examples](./docs/sequential-thinking-examples.md) - Real-world usage scenarios
+- [Tool Comparison](./docs/sequential-thinking-comparison.md) - Detailed feature comparison with other tools

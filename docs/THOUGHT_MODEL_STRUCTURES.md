@@ -367,3 +367,16 @@ All reasoning tools integrate with the synthesis engine to build evolving unders
   "max_tokens": 1000
 }
 ```
+
+## Summary
+
+Lux MCP provides four complementary reasoning tools, each with distinct data structures optimized for their specific use cases:
+
+1. **`confer`** - Simple conversational interface for quick interactions
+2. **`traced_reasoning`** - Deep reasoning with metacognitive monitoring
+3. **`biased_reasoning`** - Dual-model approach for bias detection
+4. **`planner`** - Sequential planning with branching support
+
+All tools share common patterns like session management, model selection, and synthesis integration, while maintaining their specialized capabilities through unique fields and structures.
+
+For implementation details, see the corresponding Rust source files in `src/tools/`.

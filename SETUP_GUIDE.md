@@ -16,9 +16,14 @@ OPENAI_API_KEY=sk-your-openai-key-here
 OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key-here
 
 # Model Configuration
-LUX_DEFAULT_CHAT_MODEL=gpt4.1
-LUX_DEFAULT_REASONING_MODEL=o3
-LUX_DEFAULT_BIAS_CHECKER_MODEL=o4-mini
+LUX_MODEL_REASONING=gpt-5      # Main reasoning model
+LUX_MODEL_NORMAL=gpt-5         # Main normal model
+LUX_MODEL_MINI=gpt-5-mini      # Mini model for fast tasks
+
+# Named model aliases (optional)
+LUX_MODEL_OPUS=anthropic/claude-4.1-opus
+LUX_MODEL_SONNET=anthropic/claude-4-sonnet
+LUX_MODEL_GROK=x-ai/grok-beta
 ```
 
 ## 2. Testing the Server
@@ -59,9 +64,9 @@ Add to your Claude Desktop config file:
       "env": {
         "OPENAI_API_KEY": "sk-your-openai-key",
         "OPENROUTER_API_KEY": "sk-or-v1-your-openrouter-key",
-        "LUX_DEFAULT_CHAT_MODEL": "gpt4.1",
-        "LUX_DEFAULT_REASONING_MODEL": "o3",
-        "LUX_DEFAULT_BIAS_CHECKER_MODEL": "o4-mini",
+        "LUX_MODEL_REASONING": "gpt-5",
+        "LUX_MODEL_NORMAL": "gpt-5",
+        "LUX_MODEL_MINI": "gpt-5-mini",
         "RUST_LOG": "info"
       }
     }
@@ -84,9 +89,9 @@ For VS Code with Cline extension, add to your workspace settings:
       "env": {
         "OPENAI_API_KEY": "${env:OPENAI_API_KEY}",
         "OPENROUTER_API_KEY": "${env:OPENROUTER_API_KEY}",
-        "LUX_DEFAULT_CHAT_MODEL": "gpt4.1",
-        "LUX_DEFAULT_REASONING_MODEL": "o3",
-        "LUX_DEFAULT_BIAS_CHECKER_MODEL": "o4-mini"
+        "LUX_MODEL_REASONING": "gpt-5",
+        "LUX_MODEL_NORMAL": "gpt-5",
+        "LUX_MODEL_MINI": "gpt-5-mini"
       }
     }
   }
@@ -102,7 +107,7 @@ Simple conversational AI with model selection:
   "tool": "lux:chat",
   "arguments": {
     "message": "Explain quantum computing",
-    "model": "claude", // optional, defaults to LUX_DEFAULT_CHAT_MODEL
+    "model": "claude", // optional, defaults to LUX_MODEL_NORMAL
     "temperature": 0.7, // optional
     "max_tokens": 1000 // optional
   }
@@ -203,16 +208,16 @@ Dual-model verification for bias detection:
 RUST_LOG=debug cargo run
 
 # With specific model overrides
-LUX_DEFAULT_REASONING_MODEL=claude cargo run
+LUX_MODEL_REASONING=claude cargo run
 ```
 
 ### Testing Model Combinations
 ```bash
 # High-quality reasoning
-LUX_DEFAULT_REASONING_MODEL=o3-pro LUX_DEFAULT_BIAS_CHECKER_MODEL=claude cargo run
+LUX_MODEL_REASONING=o3-pro LUX_MODEL_MINI=claude cargo run
 
 # Fast iteration
-LUX_DEFAULT_REASONING_MODEL=mini LUX_DEFAULT_BIAS_CHECKER_MODEL=flash cargo run
+LUX_MODEL_REASONING=gpt-4o-mini LUX_MODEL_MINI=gemini/gemini-1.5-flash cargo run
 ```
 
 ## 10. Best Practices

@@ -25,6 +25,8 @@ async fn main() -> Result<()> {
         primary_model: None,
         verifier_model: None,
         max_analysis_rounds: 2,
+        file_paths: None,
+        include_file_contents: true,
     };
 
     println!("📝 Step 1: Initial Query");

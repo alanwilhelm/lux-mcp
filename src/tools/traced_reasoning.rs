@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use tracing::{debug, error, info, warn};
 
@@ -46,6 +48,14 @@ pub struct TracedReasoningRequest {
     pub temperature: f32,
     #[serde(default)]
     pub guardrails: GuardrailConfig,
+
+    /// Optional file paths to include in reasoning context
+    #[serde(default)]
+    pub file_paths: Option<Vec<String>>,
+
+    /// Whether to include file contents (default: true)
+    #[serde(default = "default_true")]
+    pub include_file_contents: bool,
 }
 
 fn default_temperature() -> f32 {
@@ -251,12 +261,12 @@ pub struct TracedReasoningTool {
 
 impl TracedReasoningTool {
     pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
-        let model_resolver = ModelResolver::new();
+        let model_resolver = ModelResolver::with_config(Some(config.clone()));
 
         let openai_client = if let Some(api_key) = &config.openai_api_key {
             let client = OpenAIClient::new(
                 api_key.clone(),
-                config.default_reasoning_model.clone(),
+                config.model_reasoning.clone(),
                 config.openai_base_url.clone(),
             )?;
             Some(Arc::new(client) as Arc<dyn LLMClient>)
@@ -304,6 +314,36 @@ impl TracedReasoningTool {
         self.synthesis_sink = Some(sink);
     }
 
+    /// Read files and return their contents
+    fn read_files(&self, file_paths: &[String]) -> Vec<(String, String)> {
+        let mut file_contents = Vec::new();
+
+        for path in file_paths {
+            let file_path = Path::new(path);
+            if file_path.exists() && file_path.is_file() {
+                match fs::read_to_string(file_path) {
+                    Ok(content) => {
+                        info!("Read file for reasoning context: {}", path);
+                        // Truncate very large files
+                        let truncated = if content.len() > 15000 {
+                            format!("{}... [truncated]", &content[..15000])
+                        } else {
+                            content
+                        };
+                        file_contents.push((path.clone(), truncated));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read file {}: {}", path, e);
+                    }
+                }
+            } else {
+                debug!("File not found or not a file: {}", path);
+            }
+        }
+
+        file_contents
+    }
+
     pub async fn process_thought(
         &mut self,
         request: TracedReasoningRequest,
@@ -335,11 +375,20 @@ impl TracedReasoningTool {
         }
 
         // Get model for reasoning
-        let model = request
+        let mut model = request
             .model
             .as_ref()
             .map(|m| self.model_resolver.resolve(m))
-            .unwrap_or_else(|| self.config.default_reasoning_model.clone());
+            .unwrap_or_else(|| self.config.model_reasoning.clone());
+
+        // Block GPT-4o family; switch to default reasoning model (usually o3)
+        if self.model_resolver.is_blocked_model(&model) {
+            warn!(
+                "Requested reasoning model '{}' is blocked. Falling back to '{}'.",
+                model, self.config.model_reasoning
+            );
+            model = self.config.model_reasoning.clone();
+        }
 
         info!(
             "Processing thought {} with model '{}'",
@@ -355,9 +404,29 @@ impl TracedReasoningTool {
             info!("🔮 Metacognitive analysis initiated...");
         }
 
+        // Read any provided files if requested
+        let file_context = if request.include_file_contents && request.file_paths.is_some() {
+            let files = self.read_files(request.file_paths.as_ref().unwrap());
+            if !files.is_empty() {
+                let mut context = String::from("\n\n=== File Context ===\n");
+                for (path, content) in files {
+                    context.push_str(&format!("\nFile: {}\n{}\n", path, content));
+                }
+                Some(context)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // For first thought, store the original query
         if request.thought_number == 1 {
-            self.original_query = Some(request.thought.clone());
+            let mut query_with_context = request.thought.clone();
+            if let Some(ref context) = file_context {
+                query_with_context.push_str(context);
+            }
+            self.original_query = Some(query_with_context);
             // Reset state for new reasoning session
             self.thought_history.clear();
             self.interventions.clear();
@@ -633,13 +702,16 @@ impl TracedReasoningTool {
             "{}Current thought number: {} of {}\n\
             Generate the next {} thought in this reasoning process.\n\
             User guidance: {}\n\n\
-            Provide a clear reasoning thought that:\n\
-            1. Builds on previous insights\n\
-            2. Adds new analysis or perspective\n\
-            3. Moves toward answering the original query\n\
-            4. Maintains logical consistency\n\n\
+            Provide a concise, public-facing reasoning step (do NOT reveal internal chain-of-thought). Each step should include:\n\
+            - Summary (1-2 sentences)\n\
+            - Supporting evidence or observations (bullet points)\n\
+            - Inference (single sentence linking evidence to conclusion)\n\
+            - Explicit next action(s) or checks\n\n\
             Format: Step {}: [Type: exploration/analysis/synthesis/validation/conclusion]\n\
-            [Your detailed reasoning for this step]",
+            Summary:\n\
+            Evidence:\n\
+            Inference:\n\
+            Next actions:\n",
             context,
             request.thought_number,
             request.total_thoughts,
@@ -829,8 +901,7 @@ impl TracedReasoningTool {
 
     fn build_system_prompt(&self, guardrails: &GuardrailConfig) -> String {
         let mut prompt = String::from(
-            "You are a reasoning assistant that thinks step-by-step through problems. \
-            Structure your responses clearly with explicit reasoning steps.\n\n",
+            "You are a reasoning assistant that provides concise, public-facing, structured reasoning steps (not internal chain-of-thought).\n\n",
         );
 
         if guardrails.semantic_drift_check {
@@ -1151,27 +1222,29 @@ impl TracedReasoningTool {
             .get_client_for_model(model)
             .context("Failed to get LLM client")?;
 
-        // o4 models only support default temperature (1.0)
-        let temperature_opt = if model.starts_with("o4") {
-            None // Use default temperature for o4 models
-        } else {
-            Some(temperature)
-        };
+        // Some models only support default temperature (e.g., O4, GPT-5-mini)
+        let temperature_opt =
+            if crate::llm::token_config::TokenConfig::requires_default_temperature(model) {
+                None // Use default temperature for these constrained models
+            } else {
+                Some(temperature)
+            };
 
         // MAXIMUM TOKENS FOR DEEPEST POSSIBLE REASONING
-        let max_tokens = if model == "gpt-5" || model.starts_with("gpt-5-") {
-            Some(200000) // GPT-5: UNLEASH FULL POWER
+        // Check mini FIRST to handle gpt-5-mini correctly
+        let max_tokens = if model.contains("mini") || model.ends_with("-mini") {
+            Some(16000) // ALL mini models: Respect their 16K limit (including gpt-5-mini)
+        } else if model == "gpt-5" || model.starts_with("gpt-5-") {
+            Some(128000) // GPT-5 full models: Maximum supported (128K completion tokens)
         } else if model.starts_with("o3") {
             Some(100000) // O3: MAXIMUM DEPTH
         } else if model.starts_with("o4") {
-            Some(50000)  // O4: Fast but deep
+            Some(50000) // O4: Fast but deep
         } else {
-            Some(20000)  // Standard: Still give room to think
+            Some(20000) // Standard: Still give room to think
         };
 
-        client
-            .complete(messages, temperature_opt, max_tokens)
-            .await
+        client.complete(messages, temperature_opt, max_tokens).await
     }
 
     fn get_fallback_models(&self, requested_model: &str) -> Vec<String> {
@@ -1185,8 +1258,8 @@ impl TracedReasoningTool {
         }
 
         // Add default reasoning model as fallback if not already requested
-        if requested_model != self.config.default_reasoning_model {
-            fallbacks.push(self.config.default_reasoning_model.clone());
+        if requested_model != self.config.model_reasoning {
+            fallbacks.push(self.config.model_reasoning.clone());
         }
 
         // Add o3 as fallback for reasoning tasks
@@ -1199,12 +1272,12 @@ impl TracedReasoningTool {
             fallbacks.push("o4-mini".to_string());
         }
 
-        // Add some reliable fallbacks
-        if !requested_model.contains("gpt-4") {
-            fallbacks.push("gpt-4o-mini".to_string());
+        // Strict policy: Only GPT-5 and GPT-5-mini are allowed
+        if requested_model != "gpt-5" {
+            fallbacks.push("gpt-5".to_string());
         }
-        if !requested_model.contains("gemini") {
-            fallbacks.push("google/gemini-2.5-pro".to_string());
+        if requested_model != "gpt-5-mini" {
+            fallbacks.push("gpt-5-mini".to_string());
         }
 
         // Remove duplicates while preserving order

@@ -6,9 +6,9 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 // Token limits for different model families - OPTIMIZED FOR QUALITY
-const GPT5_DEFAULT_TOKENS: u32 = 200000;  // GPT-5: MAXIMUM reasoning depth (272K - 72K input)
-const GPT5_MAX_TOKENS: u32 = 250000;      // Push to absolute limit for deepest thinking
-const O3_DEFAULT_TOKENS: u32 = 100000;    // O3: Maximum reasoning (200K - 100K input)
+const GPT5_DEFAULT_TOKENS: u32 = 128000; // GPT-5: Maximum supported completion tokens
+const GPT5_MAX_TOKENS: u32 = 128000; // GPT-5 supports up to 128K completion tokens
+const O3_DEFAULT_TOKENS: u32 = 100000; // O3: Maximum reasoning (200K - 100K input)
 const STANDARD_DEFAULT_TOKENS: u32 = 20000; // Even standard models get more thinking space
 
 use super::client::{ChatMessage, LLMClient, LLMResponse, Role, TokenUsage};
@@ -39,11 +39,18 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<TextConfig>, // For GPT-5 verbosity control
 }
 
 #[derive(Debug, Serialize)]
 struct ReasoningConfig {
-    effort: String,
+    effort: String, // minimal, low, medium, high
+}
+
+#[derive(Debug, Serialize)]
+struct TextConfig {
+    verbosity: String, // low, medium, high
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,12 +159,20 @@ impl OpenAIClient {
         // O4 models use chat completions with max_completion_tokens
         model.starts_with("o4")
     }
-    
+
     fn is_gpt5_model(model: &str) -> bool {
         // GPT-5 models - available now!
         model == "gpt-5" || model.starts_with("gpt-5-")
     }
-    
+
+    fn requires_default_temperature(model: &str) -> bool {
+        // These models only support default temperature (1.0)
+        Self::is_o4_model(model)
+            || model == "gpt-5-mini"
+            || model == "gpt5-mini"
+            || (model.starts_with("gpt-5") && model.contains("mini"))
+    }
+
     pub fn get_optimal_tokens(model: &str) -> u32 {
         if Self::is_gpt5_model(model) {
             GPT5_DEFAULT_TOKENS
@@ -194,25 +209,34 @@ impl OpenAIClient {
     ) -> Result<LLMResponse> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        // O4 and GPT-5 models require max_completion_tokens instead of max_tokens
-        let request = if Self::is_o4_model(&self.model) || Self::is_gpt5_model(&self.model) {
+        // Some models don't support custom temperature
+        let adjusted_temperature = if Self::requires_default_temperature(&self.model) {
+            if temperature.is_some() && temperature != Some(1.0) {
+                info!(
+                    "Model '{}' doesn't support custom temperature. Using default (1.0) instead of {:?}",
+                    self.model, temperature
+                );
+            }
+            None // These models only support default temperature
+        } else {
+            temperature
+        };
+
+        // O4 models require max_completion_tokens (GPT-5 uses Responses API, not here)
+        let request = if Self::is_o4_model(&self.model) {
             ChatCompletionRequest {
                 model: self.model.clone(),
                 messages: Self::convert_messages(&messages),
-                temperature,
+                temperature: adjusted_temperature,
                 max_tokens: None,
                 max_completion_tokens: max_tokens,
-                reasoning_effort: if Self::is_gpt5_model(&self.model) { 
-                    None  // GPT-5 doesn't use reasoning_effort
-                } else { 
-                    Some("high".to_string()) // O4 uses reasoning_effort
-                },
+                reasoning_effort: Some("high".to_string()), // O4 uses reasoning_effort
             }
         } else {
             ChatCompletionRequest {
                 model: self.model.clone(),
                 messages: Self::convert_messages(&messages),
-                temperature,
+                temperature: adjusted_temperature,
                 max_tokens,
                 max_completion_tokens: None,
                 reasoning_effort: None,
@@ -221,7 +245,7 @@ impl OpenAIClient {
 
         info!("OpenAI chat request - Model: {}, Messages: {}, Temperature: {:?}, Max tokens: {:?}, Reasoning effort: {:?}", 
             request.model, request.messages.len(), request.temperature,
-            if Self::is_o4_model(&self.model) || Self::is_gpt5_model(&self.model) { request.max_completion_tokens } else { request.max_tokens },
+            if Self::is_o4_model(&self.model) { request.max_completion_tokens } else { request.max_tokens },
             request.reasoning_effort);
 
         let response = self
@@ -301,14 +325,32 @@ impl OpenAIClient {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let request = ResponsesRequest {
-            model: self.model.clone(),
-            input,
-            temperature: None, // O3 models don't support temperature
-            max_output_tokens: max_tokens,
-            reasoning: Some(ReasoningConfig {
-                effort: "high".to_string(), // Set to high for maximum reasoning
-            }),
+        let request = if Self::is_gpt5_model(&self.model) {
+            // GPT-5 configuration with maximum reasoning and verbosity
+            ResponsesRequest {
+                model: self.model.clone(),
+                input,
+                temperature: None, // GPT-5 doesn't support temperature (like O3)
+                max_output_tokens: max_tokens,
+                reasoning: Some(ReasoningConfig {
+                    effort: "high".to_string(), // Maximum reasoning for GPT-5
+                }),
+                text: Some(TextConfig {
+                    verbosity: "high".to_string(), // High verbosity for detailed responses
+                }),
+            }
+        } else {
+            // O3 configuration
+            ResponsesRequest {
+                model: self.model.clone(),
+                input,
+                temperature: None, // O3 models don't support temperature
+                max_output_tokens: max_tokens,
+                reasoning: Some(ReasoningConfig {
+                    effort: "high".to_string(), // Maximum reasoning for O3
+                }),
+                text: None, // O3 doesn't support verbosity parameter
+            }
         };
 
         info!("OpenAI Responses API request - Model: {}, Input length: {}, Temperature: {:?}, Max output tokens: {:?}, Reasoning effort: {:?}", 
@@ -414,8 +456,8 @@ impl LLMClient for OpenAIClient {
                 tokio::time::sleep(delay).await;
             }
 
-            let result = if Self::is_o3_model(&self.model) {
-                info!("Using Responses API for o3 model: {}", self.model);
+            let result = if Self::is_o3_model(&self.model) || Self::is_gpt5_model(&self.model) {
+                info!("Using Responses API for model: {}", self.model);
                 self.make_responses_request(messages.clone(), temperature, max_tokens)
                     .await
             } else {

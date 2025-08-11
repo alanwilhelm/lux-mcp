@@ -2,9 +2,11 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::llm::{
     client::{ChatMessage, LLMClient},
@@ -389,6 +391,14 @@ pub struct BiasedReasoningRequest {
     pub verifier_model: Option<String>,
     #[serde(default = "default_max_steps")]
     pub max_analysis_rounds: u32,
+
+    /// Optional file paths to include in reasoning context
+    #[serde(default)]
+    pub file_paths: Option<Vec<String>>,
+
+    /// Whether to include file contents (default: true)
+    #[serde(default = "default_true")]
+    pub include_file_contents: bool,
 }
 
 fn default_max_steps() -> u32 {
@@ -537,12 +547,12 @@ pub struct BiasedReasoningTool {
 
 impl BiasedReasoningTool {
     pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
-        let model_resolver = ModelResolver::new();
+        let model_resolver = ModelResolver::with_config(Some(config.clone()));
 
         let openai_client = if let Some(api_key) = &config.openai_api_key {
             let client = OpenAIClient::new(
                 api_key.clone(),
-                config.default_reasoning_model.clone(),
+                config.model_reasoning.clone(),
                 config.openai_base_url.clone(),
             )?;
             Some(Arc::new(client) as Arc<dyn LLMClient>)
@@ -597,13 +607,15 @@ impl BiasedReasoningTool {
             format!("bias_{}", hex::encode(&hasher.finalize()[..8]))
         };
 
-        // ALWAYS use configured defaults
-        let primary_model = self
-            .model_resolver
-            .resolve(&self.config.default_reasoning_model);
-        let verifier_model = self
-            .model_resolver
-            .resolve(&self.config.default_bias_checker_model);
+        // STRICT POLICY: Only GPT-5 family allowed
+        let mut primary_model = self.model_resolver.resolve("gpt-5");
+        let mut verifier_model = self.model_resolver.resolve("gpt-5-mini");
+        if !self.model_resolver.is_allowed_model(&primary_model) {
+            primary_model = "gpt-5".to_string();
+        }
+        if !self.model_resolver.is_allowed_model(&verifier_model) {
+            verifier_model = "gpt-5-mini".to_string();
+        }
 
         // Initialize session if needed and get step info
         let (step_type, step_count, is_new_session) = {
@@ -839,7 +851,19 @@ impl BiasedReasoningTool {
 
             // Call LLM
             let response = primary_client
-                .complete(messages, Some(0.7), Some(10000))
+                .complete(
+                    messages,
+                    if crate::llm::token_config::TokenConfig::requires_default_temperature(
+                        &primary_model,
+                    ) {
+                        None
+                    } else {
+                        Some(0.7)
+                    },
+                    Some(crate::llm::token_config::TokenConfig::get_reasoning_tokens(
+                        &primary_model,
+                    )),
+                )
                 .await?;
 
             // Parse and apply synthesis update
@@ -1055,7 +1079,19 @@ impl BiasedReasoningTool {
 
             // Call LLM
             let response = verifier_client
-                .complete(messages, None, Some(10000))
+                .complete(
+                    messages,
+                    if crate::llm::token_config::TokenConfig::requires_default_temperature(
+                        &verifier_model,
+                    ) {
+                        None
+                    } else {
+                        Some(0.3)
+                    },
+                    Some(crate::llm::token_config::TokenConfig::get_optimal_tokens(
+                        &verifier_model,
+                    )),
+                )
                 .await?;
 
             // Parse bias check
@@ -1304,7 +1340,19 @@ Pattern Analysis:
 
             // Call LLM
             let response = primary_client
-                .complete(messages, Some(0.7), Some(10000))
+                .complete(
+                    messages,
+                    if crate::llm::token_config::TokenConfig::requires_default_temperature(
+                        &primary_model,
+                    ) {
+                        None
+                    } else {
+                        Some(0.7)
+                    },
+                    Some(crate::llm::token_config::TokenConfig::get_reasoning_tokens(
+                        &primary_model,
+                    )),
+                )
                 .await?;
 
             // Parse and apply synthesis update
@@ -1499,9 +1547,13 @@ Pattern Analysis:
             },
         ];
 
-        let max_tokens = 10000;
+        // Use optimal tokens for verifier model - GPT-5 gets MAXIMUM
+        let max_tokens =
+            crate::llm::token_config::TokenConfig::get_optimal_tokens(&verifier_model_name);
 
-        let temperature = if verifier_model_name.starts_with("o4") {
+        let temperature = if crate::llm::token_config::TokenConfig::requires_default_temperature(
+            &verifier_model_name,
+        ) {
             None
         } else {
             Some(0.3)
@@ -1672,6 +1724,36 @@ Pattern Analysis:
     }
 
     /// Set the synthesis sink for all sessions
+    /// Read files and return their contents
+    fn read_files(&self, file_paths: &[String]) -> Vec<(String, String)> {
+        let mut file_contents = Vec::new();
+
+        for path in file_paths {
+            let file_path = Path::new(path);
+            if file_path.exists() && file_path.is_file() {
+                match fs::read_to_string(file_path) {
+                    Ok(content) => {
+                        info!("Read file for bias analysis: {}", path);
+                        // Truncate very large files
+                        let truncated = if content.len() > 15000 {
+                            format!("{}... [truncated]", &content[..15000])
+                        } else {
+                            content
+                        };
+                        file_contents.push((path.clone(), truncated));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read file {}: {}", path, e);
+                    }
+                }
+            } else {
+                debug!("File not found or not a file: {}", path);
+            }
+        }
+
+        file_contents
+    }
+
     pub fn set_synthesis_sink(&self, sink: Arc<dyn SynthesisSink>) {
         let mut sessions = self.sessions.lock();
         for (_, session) in sessions.iter_mut() {

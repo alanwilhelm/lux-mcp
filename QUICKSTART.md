@@ -166,42 +166,13 @@ export LUX_DEFAULT_BIAS_CHECKER_MODEL="o4-mini" # for bias checking
 - `gemini` → Gemini Pro
 - `llama3` → Llama 3 70B
 
-## Optional: Database Setup
+## Key Features
 
-If you want persistence across restarts:
-
-```bash
-# 1. Install PostgreSQL
-brew install postgresql  # macOS
-# or
-sudo apt install postgresql  # Ubuntu
-
-# 2. Create database
-createdb lux_mcp
-
-# 3. Set environment variable
-export DATABASE_URL="postgresql://localhost/lux_mcp"
-
-# 4. Run migrations
-cargo install sea-orm-cli
-sea-orm-cli migrate up
-```
-
-## Features Without Database
-
-✅ All tools work perfectly
+✅ All tools work with in-memory state
 ✅ Conversation threading (3-hour memory)
 ✅ Metacognitive monitoring
 ✅ Quality tracking
 ✅ Session management (30-minute sessions)
-
-## Features With Database
-
-All of the above, plus:
-✅ Persistent conversation history
-✅ Thread checkpointing (survive restarts)
-✅ Long-term analytics
-✅ Cross-session insights
 
 ## Troubleshooting
 

@@ -48,7 +48,7 @@ impl ServerHandler for LuxServer {
         let tools = vec![
             Tool {
                 name: "confer".into(),
-                description: Some("Simple conversational AI with model selection".into()),
+                description: Some("Simple conversational AI with DIRECT SERVER-SIDE FILE READING. ⚠️ CRITICAL: DO NOT read files with your Read tool! Just pass the file paths as STRINGS in 'file_paths' array. The MCP server reads files directly from disk. Example: {\"message\": \"Analyze\", \"file_paths\": [\"/absolute/path/to/file.js\"]} - pass paths ONLY, NOT contents! ⚠️ This tool uses OPTIMAL TOKEN ALLOCATION. The 'max_tokens' parameter is NOT supported. GPT-5: 128K, O3: 100K, O4: 50K tokens.".into()),
                 input_schema: json_to_arc_map(json!({
                     "type": "object",
                     "properties": {
@@ -58,24 +58,45 @@ impl ServerHandler for LuxServer {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Optional model to use (e.g., 'gpt4.1', 'claude', 'gemini')"
+                            "description": "Optional model to use (e.g., 'gpt5', 'o3-pro', 'o4-mini', 'gpt4.1', 'claude', 'gemini'). Default: configured default model"
                         },
                         "temperature": {
                             "type": "number",
-                            "description": "Optional temperature (0.0-1.0)"
+                            "description": "Optional temperature (0.0-1.0). Note: O3/O4 models may ignore custom temperatures"
                         },
                         "continuation_id": {
                             "type": "string",
                             "description": "Optional thread ID to continue a previous conversation"
+                        },
+                        "file_paths": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Optional file paths to include in context for the LLM"
+                        },
+                        "include_file_contents": {
+                            "type": "boolean",
+                            "description": "Whether to include file contents in the message (default: true)"
                         }
                     },
-                    "required": ["message"]
+                    "required": ["message"],
+                    "additionalProperties": false,
+                    "x-strict-params": true,
+                    "x-ignored-params": ["max_tokens"],
+                    "x-token-allocation": {
+                        "gpt-5": 128000,
+                        "o3": 100000,
+                        "o4": 50000,
+                        "default": 20000
+                    },
+                    "x-important": "⚠️ DO NOT pass 'max_tokens' - it will be ignored. Token limits are automatically optimized per model for maximum intelligence."
                 })),
                 annotations: None,
             },
             Tool {
                 name: "traced_reasoning".into(),
-                description: Some("Multi-call step-by-step reasoning with metacognitive monitoring - Generate variable thoughts with detailed output for each".into()),
+                description: Some("Multi-call step-by-step reasoning with metacognitive monitoring. ⚠️ IMPORTANT: Uses MAXIMUM TOKEN ALLOCATION for deep reasoning. GPT-5 uses 128,000 tokens, O3 uses 100,000 tokens. The 'max_tokens' parameter is NOT supported and will be IGNORED.".into()),
                 input_schema: json_to_arc_map(json!({
                     "type": "object",
                     "properties": {
@@ -147,13 +168,21 @@ impl ServerHandler for LuxServer {
                             "description": "Optional thread ID to continue a previous conversation"
                         }
                     },
-                    "required": ["thought", "thought_number", "total_thoughts", "next_thought_needed"]
+                    "required": ["thought", "thought_number", "total_thoughts", "next_thought_needed"],
+                    "additionalProperties": false,
+                    "x-ignored-params": ["max_tokens"],
+                    "x-token-allocation": {
+                        "gpt-5": 128000,
+                        "o3": 100000,
+                        "default": 20000
+                    },
+                    "x-important": "⚠️ DO NOT pass 'max_tokens' - it will be ignored. Token limits are automatically optimized per model."
                 })),
                 annotations: None,
             },
             Tool {
                 name: "biased_reasoning".into(),
-                description: Some("Step-by-step dual-model reasoning with bias detection. Returns one step per call with session_id for continuity.".into()),
+                description: Some("Step-by-step dual-model reasoning with bias detection. ⚠️ IMPORTANT: Uses OPTIMAL TOKEN ALLOCATION. GPT-5 uses 128,000 tokens. The 'max_tokens' parameter is NOT supported and will be IGNORED. Returns one step per call with session_id for continuity.".into()),
                 input_schema: json_to_arc_map(json!({
                     "type": "object",
                     "properties": {
@@ -182,7 +211,10 @@ impl ServerHandler for LuxServer {
                             "description": "Maximum analysis rounds (default: 3)"
                         }
                     },
-                    "required": ["query"]
+                    "required": ["query"],
+                    "additionalProperties": false,
+                    "x-ignored-params": ["max_tokens"],
+                    "x-important": "⚠️ DO NOT pass 'max_tokens' - it will be ignored. Token limits are automatically optimized."
                 })),
                 annotations: None,
             },
@@ -197,7 +229,7 @@ impl ServerHandler for LuxServer {
             },
             Tool {
                 name: "planner".into(),
-                description: Some("Interactive sequential planner - Break down complex tasks through step-by-step planning".into()),
+                description: Some("Interactive sequential planner with DIRECT FILE READING. Pass specific files in 'file_paths' array OR set 'auto_discover_files': true to auto-find relevant files. Example: {\"step\": \"Plan API\", \"file_paths\": [\"/api/routes.js\"], \"step_number\": 1, \"total_steps\": 5, \"next_step_required\": true}. ⚠️ IMPORTANT: Defaults to GPT-5 for maximum planning intelligence (128,000 tokens). Returns MANDATORY actions that MUST be executed.".into()),
                 input_schema: json_to_arc_map(json!({
                     "type": "object",
                     "properties": {
@@ -218,6 +250,21 @@ impl ServerHandler for LuxServer {
                         "next_step_required": {
                             "type": "boolean",
                             "description": "Whether another planning step is required after this one"
+                        },
+                        "file_paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional: Specific file paths to include in planning context for examination"
+                        },
+                        "auto_discover_files": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Whether to auto-discover and read relevant project files (default: true)"
+                        },
+                        "include_file_contents": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Whether to include file contents in planning context (default: true)"
                         },
                         "is_step_revision": {
                             "type": "boolean",
@@ -245,14 +292,245 @@ impl ServerHandler for LuxServer {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Optional model to use for planning"
+                            "description": "Optional model to use for planning (defaults to gpt-5 for maximum capability)"
                         },
                         "temperature": {
                             "type": "number",
                             "description": "Optional temperature (0.0-1.0, default: 0.7)"
                         }
                     },
-                    "required": ["step", "step_number", "total_steps", "next_step_required"]
+                    "required": ["step", "step_number", "total_steps", "next_step_required"],
+                    "additionalProperties": false,
+                    "x-ignored-params": ["max_tokens"],
+                    "x-token-allocation": {
+                        "gpt-5": 128000,
+                        "o3": 100000,
+                        "default": 20000
+                    },
+                    "x-important": "⚠️ DO NOT pass 'max_tokens' - it will be ignored. Token limits are automatically optimized for deep planning."
+                })),
+                annotations: None,
+            },
+            Tool {
+                name: "sequential_thinking".into(),
+                description: Some("Simple sequential thinking tool for organizing thoughts step-by-step. Pure state tracking without LLM generation - you provide the thoughts.".into()),
+                input_schema: json_to_arc_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "thought": {
+                            "type": "string",
+                            "description": "The current thinking step content"
+                        },
+                        "thought_number": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Current thought number"
+                        },
+                        "total_thoughts": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Estimated total thoughts needed"
+                        },
+                        "next_thought_needed": {
+                            "type": "boolean",
+                            "description": "Whether another thought step is needed"
+                        },
+                        "is_revision": {
+                            "type": "boolean",
+                            "description": "Whether this revises previous thinking"
+                        },
+                        "revises_thought": {
+                            "type": "integer",
+                            "description": "Which thought is being reconsidered"
+                        },
+                        "branch_from_thought": {
+                            "type": "integer",
+                            "description": "Branching point thought number"
+                        },
+                        "branch_id": {
+                            "type": "string",
+                            "description": "Branch identifier"
+                        },
+                        "needs_more_thoughts": {
+                            "type": "boolean",
+                            "description": "If more thoughts are needed"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session ID for continuity"
+                        }
+                    },
+                    "required": ["thought", "thought_number", "total_thoughts", "next_thought_needed"],
+                    "additionalProperties": false
+                })),
+                annotations: None,
+            },
+            Tool {
+                name: "sequential_thinking_external".into(),
+                description: Some("AI-powered sequential thinking with external LLM integration. Generates thoughts using specified model while maintaining structure.".into()),
+                input_schema: json_to_arc_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "thought": {
+                            "type": "string",
+                            "description": "For step 1: the problem/query, for 2+: guidance or continuation"
+                        },
+                        "thought_number": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Current thought number"
+                        },
+                        "total_thoughts": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Estimated total thoughts needed"
+                        },
+                        "next_thought_needed": {
+                            "type": "boolean",
+                            "description": "Whether another thought step is needed"
+                        },
+                        "is_revision": {
+                            "type": "boolean",
+                            "description": "Whether this revises previous thinking"
+                        },
+                        "revises_thought": {
+                            "type": "integer",
+                            "description": "Which thought is being reconsidered"
+                        },
+                        "branch_from_thought": {
+                            "type": "integer",
+                            "description": "Branching point thought number"
+                        },
+                        "branch_id": {
+                            "type": "string",
+                            "description": "Branch identifier"
+                        },
+                        "needs_more_thoughts": {
+                            "type": "boolean",
+                            "description": "If more thoughts are needed"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional session ID for continuity"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model to use for generation"
+                        },
+                        "temperature": {
+                            "type": "number",
+                            "description": "Optional temperature (0.0-1.0)"
+                        },
+                        "use_llm": {
+                            "type": "boolean",
+                            "description": "Whether to use LLM for generation (default: true)"
+                        }
+                    },
+                    "required": ["thought", "thought_number", "total_thoughts", "next_thought_needed"],
+                    "additionalProperties": false
+                })),
+                annotations: None,
+            },
+            Tool {
+                name: "hybrid_biased_reasoning".into(),
+                description: Some("Hybrid bias detection where Claude provides reasoning and external LLM checks for biases, logical fallacies, and problematic assumptions. Can read files directly to provide full context to the external LLM.".into()),
+                input_schema: json_to_arc_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "reasoning_step": {
+                            "type": "string",
+                            "description": "The reasoning step provided by Claude"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Context or original query this reasoning addresses"
+                        },
+                        "step_number": {
+                            "type": "integer",
+                            "description": "Step number in the reasoning chain"
+                        },
+                        "previous_steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Previous reasoning steps for context"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for tracking"
+                        },
+                        "bias_check_model": {
+                            "type": "string",
+                            "description": "Model to use for bias checking (defaults to configured bias checker)"
+                        },
+                        "temperature": {
+                            "type": "number",
+                            "description": "Temperature for bias checking (lower = more consistent)"
+                        },
+                        "bias_types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Specific types of bias to check for"
+                        },
+                        "file_paths": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "File paths to include in context for the external LLM bias checker"
+                        },
+                        "include_file_contents": {
+                            "type": "boolean",
+                            "description": "Whether to include file contents in the analysis (default: true)"
+                        }
+                    },
+                    "required": ["reasoning_step"],
+                    "additionalProperties": false
+                })),
+                annotations: None,
+            },
+            Tool {
+                name: "setup_config".into(),
+                description: Some("Configure Lux MCP environment settings. This tool guides the host LLM through creating or updating the .env configuration file with API keys and model preferences. The user only needs to provide their API keys.".into()),
+                input_schema: json_to_arc_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "openai_api_key": {
+                            "type": "string",
+                            "description": "User's OpenAI API key (optional - will prompt if not provided)"
+                        },
+                        "openrouter_api_key": {
+                            "type": "string",
+                            "description": "User's OpenRouter API key (optional - will prompt if not provided)"
+                        },
+                        "use_advanced_models": {
+                            "type": "boolean",
+                            "description": "Whether to use advanced models (gpt-5, o3-pro) or standard (gpt-4o)",
+                            "default": true
+                        },
+                        "custom_models": {
+                            "type": "object",
+                            "properties": {
+                                "reasoning_model": {
+                                    "type": "string",
+                                    "description": "Custom reasoning model"
+                                },
+                                "normal_model": {
+                                    "type": "string",
+                                    "description": "Custom normal model"
+                                },
+                                "mini_model": {
+                                    "type": "string",
+                                    "description": "Custom mini model"
+                                }
+                            },
+                            "description": "Custom model preferences"
+                        }
+                    },
+                    "additionalProperties": false
                 })),
                 annotations: None,
             },
@@ -677,7 +955,8 @@ impl ServerHandler for LuxServer {
                                 ""
                             },
                             response.next_action,
-                            response.session_status.reasoning_steps + response.session_status.bias_checks,
+                            response.session_status.reasoning_steps
+                                + response.session_status.bias_checks,
                             response.session_status.total_steps
                         )
                     }
@@ -918,6 +1197,37 @@ impl ServerHandler for LuxServer {
                             result.push_str("\n");
                         }
 
+                        // Add mandatory actions if present
+                        if let Some(mandatory_actions) = &response.mandatory_actions {
+                            result.push_str("\n⚠️ **MANDATORY ACTIONS YOU MUST TAKE:**\n");
+                            for action in mandatory_actions {
+                                result.push_str(&format!("• {}\n", action));
+                            }
+                            result.push_str("\n");
+                        }
+
+                        // Add files examined if present
+                        if let Some(files_examined) = &response.files_examined {
+                            if !files_examined.is_empty() {
+                                result.push_str("📁 **Files Examined:**\n");
+                                for file in files_examined {
+                                    result.push_str(&format!("• {}\n", file));
+                                }
+                                result.push_str("\n");
+                            }
+                        }
+
+                        // Add recommended files if present
+                        if let Some(recommended_files) = &response.recommended_files {
+                            if !recommended_files.is_empty() {
+                                result.push_str("📄 **Recommended Files to Examine:**\n");
+                                for file in recommended_files {
+                                    result.push_str(&format!("• {}\n", file));
+                                }
+                                result.push_str("\n");
+                            }
+                        }
+
                         result.push_str(&format!(
                             "➡️ **Next Action:** {}\n\n\
                             Use the planner tool again with step_number: {} to continue.",
@@ -931,23 +1241,59 @@ impl ServerHandler for LuxServer {
                         result
                     }
                     "planning_complete" => {
-                        format!(
+                        let mut result = format!(
                             "✅ **PLANNING COMPLETE** ✅\n\n\
                             Model: {}\n\n\
-                            {}\n\n\
-                            ---\n\n\
-                            📋 **Instructions:**\n{}\n\n\
-                            🎯 **Ready for Implementation!**",
+                            {}\n\n",
                             model_name,
                             response
                                 .plan_summary
                                 .as_ref()
-                                .unwrap_or(&"Plan completed".to_string()),
+                                .unwrap_or(&"Plan completed".to_string())
+                        );
+
+                        // Add mandatory actions if present
+                        if let Some(mandatory_actions) = &response.mandatory_actions {
+                            result.push_str("⚠️ **MANDATORY ACTIONS YOU MUST TAKE NOW:**\n");
+                            for action in mandatory_actions {
+                                result.push_str(&format!("• {}\n", action));
+                            }
+                            result.push_str("\n");
+                        }
+
+                        // Add files examined during planning
+                        if let Some(files_examined) = &response.files_examined {
+                            if !files_examined.is_empty() {
+                                result.push_str("📁 **Files Examined During Planning:**\n");
+                                for file in files_examined {
+                                    result.push_str(&format!("• {}\n", file));
+                                }
+                                result.push_str("\n");
+                            }
+                        }
+
+                        // Add recommended files for implementation
+                        if let Some(recommended_files) = &response.recommended_files {
+                            if !recommended_files.is_empty() {
+                                result.push_str("📄 **Key Files for Implementation:**\n");
+                                for file in recommended_files {
+                                    result.push_str(&format!("• {}\n", file));
+                                }
+                                result.push_str("\n");
+                            }
+                        }
+
+                        result.push_str(&format!(
+                            "---\n\n\
+                            📋 **Instructions:**\n{}\n\n\
+                            🎯 **Ready for Implementation!**",
                             response
                                 .next_steps
                                 .as_ref()
                                 .unwrap_or(&"Present the plan to the user".to_string())
-                        )
+                        ));
+
+                        result
                     }
                     _ => {
                         format!(
@@ -960,6 +1306,265 @@ impl ServerHandler for LuxServer {
 
                 Ok(CallToolResult {
                     content: vec![Content::text(formatted_response)],
+                    is_error: Some(false),
+                })
+            }
+
+            "sequential_thinking" => {
+                let req: crate::tools::SequentialThinkingRequest =
+                    if let Some(args) = request.arguments {
+                        serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
+                            McpError::invalid_params(
+                                format!("Invalid sequential thinking params: {}", e),
+                                None,
+                            )
+                        })?
+                    } else {
+                        return Err(McpError::invalid_params(
+                            "Missing arguments for sequential_thinking",
+                            None,
+                        ));
+                    };
+
+                let response = self
+                    .sequential_thinking_tool
+                    .process_thought(req)
+                    .map_err(|e| {
+                        McpError::internal_error(format!("Sequential thinking error: {}", e), None)
+                    })?;
+
+                let formatted_response = format!(
+                    "💭 **SEQUENTIAL THOUGHT** 💭\n\n\
+                    Thought {} of {}: {}\n\n\
+                    ---\n\n\
+                    📊 **Progress:**\n\
+                    • Status: {}\n\
+                    • Total thoughts in history: {}\n\
+                    • Active branches: {}\n\n\
+                    {}",
+                    response.thought_number,
+                    response.total_thoughts,
+                    response.status,
+                    response.status,
+                    response.thought_history_length,
+                    response.branches.len(),
+                    if response.next_thought_needed {
+                        format!(
+                            "➡️ **Next:** Use sequential_thinking with thought_number: {}",
+                            response.thought_number + 1
+                        )
+                    } else {
+                        "✅ **Complete**".to_string()
+                    }
+                );
+
+                Ok(CallToolResult {
+                    content: vec![Content::text(formatted_response)],
+                    is_error: Some(false),
+                })
+            }
+
+            "sequential_thinking_external" => {
+                let req: crate::tools::SequentialThinkingExternalRequest =
+                    if let Some(args) = request.arguments {
+                        serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
+                            McpError::invalid_params(
+                                format!("Invalid sequential thinking external params: {}", e),
+                                None,
+                            )
+                        })?
+                    } else {
+                        return Err(McpError::invalid_params(
+                            "Missing arguments for sequential_thinking_external",
+                            None,
+                        ));
+                    };
+
+                let response = self
+                    .sequential_thinking_external_tool
+                    .process_thought(req)
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("Sequential thinking external error: {}", e),
+                            None,
+                        )
+                    })?;
+
+                let model_display = response
+                    .model_used
+                    .as_ref()
+                    .map(|m| format!("Model: {} 🤖", m))
+                    .unwrap_or_default();
+
+                let confidence_display = response
+                    .confidence
+                    .map(|c| format!("Confidence: {:.2}", c))
+                    .unwrap_or_default();
+
+                let formatted_response = format!(
+                    "🤖 **AI SEQUENTIAL THOUGHT** 🤖\n\n\
+                    Thought {} of {}: {}\n\
+                    {}\n\
+                    {}\n\n\
+                    ---\n\n\
+                    📝 **Thought Content:**\n{}\n\n\
+                    ---\n\n\
+                    📊 **Progress:**\n\
+                    • Status: {}\n\
+                    • Total thoughts: {}\n\
+                    • Active branches: {}\n\n\
+                    {}\n\n\
+                    {}",
+                    response.thought_number,
+                    response.total_thoughts,
+                    response.status,
+                    model_display,
+                    confidence_display,
+                    response.thought_content,
+                    response.status,
+                    response.thought_history_length,
+                    response.branches.len(),
+                    response
+                        .reasoning_hint
+                        .as_ref()
+                        .map(|h| format!("💡 **Hint:** {}", h))
+                        .unwrap_or_default(),
+                    if response.next_thought_needed {
+                        format!(
+                            "➡️ **Next:** Use sequential_thinking_external with thought_number: {}",
+                            response.thought_number + 1
+                        )
+                    } else {
+                        "✅ **Complete**".to_string()
+                    }
+                );
+
+                Ok(CallToolResult {
+                    content: vec![Content::text(formatted_response)],
+                    is_error: Some(false),
+                })
+            }
+
+            "hybrid_biased_reasoning" => {
+                let req: crate::tools::HybridBiasedReasoningRequest =
+                    if let Some(args) = request.arguments {
+                        serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
+                            McpError::invalid_params(
+                                format!("Invalid hybrid biased reasoning params: {}", e),
+                                None,
+                            )
+                        })?
+                    } else {
+                        return Err(McpError::invalid_params(
+                            "Missing arguments for hybrid_biased_reasoning",
+                            None,
+                        ));
+                    };
+
+                let response = self
+                    .hybrid_biased_reasoning_tool
+                    .check_reasoning_bias(req)
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("Hybrid biased reasoning error: {}", e),
+                            None,
+                        )
+                    })?;
+
+                let bias_list = if response.biases_found.is_empty() {
+                    "• No significant biases detected ✅".to_string()
+                } else {
+                    response
+                        .biases_found
+                        .iter()
+                        .map(|b| {
+                            format!(
+                                "• **{}** ({} severity): {}",
+                                b.bias_type, b.severity, b.description
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                let suggestions_list = if response.suggestions.is_empty() {
+                    "• No specific suggestions".to_string()
+                } else {
+                    response
+                        .suggestions
+                        .iter()
+                        .map(|s| format!("• {}", s))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                let formatted_response = format!(
+                    "🔍 **BIAS ANALYSIS RESULT** 🔍\n\n\
+                    **Bias Detection:** {}\n\
+                    **Confidence:** {:.2}\n\
+                    **Bias Score:** {:.2}/1.0\n\
+                    **Model Used:** {}\n\n\
+                    ---\n\n\
+                    📋 **Biases Found:**\n{}\n\n\
+                    💡 **Suggestions:**\n{}\n\n\
+                    {}{}",
+                    if response.bias_detected {
+                        "⚠️ Biases Detected"
+                    } else {
+                        "✅ No Significant Bias"
+                    },
+                    response.confidence,
+                    response.bias_score,
+                    response.model_used,
+                    bias_list,
+                    suggestions_list,
+                    response
+                        .alternative_phrasing
+                        .map(|p| format!("🔄 **Alternative Phrasing:**\n{}\n\n", p))
+                        .unwrap_or_default(),
+                    if response.revision_recommended {
+                        "⚠️ **Recommendation:** Consider revising this reasoning step"
+                    } else {
+                        "✅ **Recommendation:** This reasoning step appears balanced"
+                    }
+                );
+
+                Ok(CallToolResult {
+                    content: vec![Content::text(formatted_response)],
+                    is_error: Some(false),
+                })
+            }
+
+            "setup_config" => {
+                let req: crate::tools::SetupConfigRequest = if let Some(args) = request.arguments {
+                    serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
+                        McpError::invalid_params(
+                            format!("Invalid setup config params: {}", e),
+                            None,
+                        )
+                    })?
+                } else {
+                    crate::tools::SetupConfigRequest {
+                        openai_api_key: None,
+                        openrouter_api_key: None,
+                        use_advanced_models: true,
+                        custom_models: None,
+                    }
+                };
+
+                let tool = crate::tools::SetupConfigTool::new();
+                let response = tool
+                    .setup_config(req)
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                Ok(CallToolResult {
+                    content: vec![Content::text(
+                        serde_json::to_string_pretty(&response)
+                            .unwrap_or_else(|_| "Failed to serialize response".to_string()),
+                    )],
                     is_error: Some(false),
                 })
             }

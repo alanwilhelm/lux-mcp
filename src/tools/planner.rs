@@ -14,8 +14,10 @@ use lux_synthesis::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PlannerRequest {
@@ -43,10 +45,30 @@ pub struct PlannerRequest {
     pub model: Option<String>,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+
+    /// File paths to include in planning context
+    #[serde(default)]
+    pub file_paths: Option<Vec<String>>,
+
+    /// Whether to auto-discover and read relevant files
+    #[serde(default = "default_true")]
+    pub auto_discover_files: bool,
+
+    /// Whether to include file contents in context
+    #[serde(default = "default_true")]
+    pub include_file_contents: bool,
+
+    /// Use mini model for cost savings
+    #[serde(default)]
+    pub use_mini: bool,
 }
 
 fn default_temperature() -> f32 {
     0.7
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,6 +98,18 @@ pub struct PlannerResponse {
     pub model_used: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthesis_snapshot: Option<SynthesisSnapshot>,
+
+    /// MANDATORY actions the caller MUST take
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mandatory_actions: Option<Vec<String>>,
+
+    /// Files that were examined in this planning step
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_examined: Option<Vec<String>>,
+
+    /// Files recommended for examination in next step
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_files: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -118,16 +152,133 @@ pub struct PlannerTool {
     branches: HashMap<String, Vec<StepData>>,
     synthesis: Arc<StdMutex<EvolvingSynthesis>>,
     synthesis_sink: Option<Arc<dyn SynthesisSink>>,
+    /// Cache of file contents for the session
+    file_cache: HashMap<String, String>,
 }
 
 impl PlannerTool {
+    /// Read files and return their contents
+    fn read_files(&mut self, file_paths: &[String]) -> Vec<(String, String)> {
+        let mut file_contents = Vec::new();
+
+        for path in file_paths {
+            // Check cache first
+            if let Some(cached_content) = self.file_cache.get(path) {
+                info!("Using cached file for planning: {}", path);
+                file_contents.push((path.clone(), cached_content.clone()));
+                continue;
+            }
+
+            let file_path = Path::new(path);
+            if file_path.exists() && file_path.is_file() {
+                match fs::read_to_string(file_path) {
+                    Ok(content) => {
+                        info!("Read file for planning context: {}", path);
+                        // Truncate very large files to avoid token limits
+                        let truncated = if content.len() > 15000 {
+                            format!("{}... [truncated]", &content[..15000])
+                        } else {
+                            content.clone()
+                        };
+                        // Cache the content
+                        self.file_cache.insert(path.clone(), truncated.clone());
+                        file_contents.push((path.clone(), truncated));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read file {}: {}", path, e);
+                    }
+                }
+            } else {
+                info!("File not found or not a file: {}", path);
+            }
+        }
+
+        file_contents
+    }
+
+    /// Auto-discover relevant files based on the planning context
+    fn auto_discover_files(&self, step_content: &str) -> Vec<String> {
+        let mut discovered_files = Vec::new();
+
+        // Look for common project files
+        let common_files = vec![
+            "README.md",
+            "package.json",
+            "Cargo.toml",
+            "requirements.txt",
+            "setup.py",
+            "Makefile",
+            "docker-compose.yml",
+            ".env.example",
+            "config.yaml",
+            "config.json",
+        ];
+
+        for file in &common_files {
+            let path = Path::new(file);
+            if path.exists() && path.is_file() {
+                discovered_files.push(file.to_string());
+            }
+        }
+
+        // Look for specific patterns in the step content
+        if step_content.contains("API") || step_content.contains("endpoint") {
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*api*.{py,js,ts,rs}");
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*route*.{py,js,ts,rs}");
+        }
+
+        if step_content.contains("database") || step_content.contains("SQL") {
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*model*.{py,js,ts,rs}");
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*schema*.{sql,prisma}");
+            Self::discover_files_by_pattern(&mut discovered_files, "**/migrations/*.sql");
+        }
+
+        if step_content.contains("test") || step_content.contains("testing") {
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*test*.{py,js,ts,rs}");
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*spec*.{py,js,ts,rs}");
+        }
+
+        if step_content.contains("auth") || step_content.contains("security") {
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*auth*.{py,js,ts,rs}");
+            Self::discover_files_by_pattern(&mut discovered_files, "**/*security*.{py,js,ts,rs}");
+        }
+
+        // Limit to first 10 discovered files to avoid overwhelming context
+        discovered_files.truncate(10);
+        discovered_files
+    }
+
+    fn discover_files_by_pattern(discovered_files: &mut Vec<String>, pattern: &str) {
+        // This is a simplified implementation - in production you'd use glob crate
+        // For now, just check common locations
+        let common_dirs = vec!["src", "lib", "app", "api", "tests"];
+        for dir in &common_dirs {
+            let dir_path = Path::new(dir);
+            if dir_path.exists() && dir_path.is_dir() {
+                // Add a few representative files (simplified)
+                if let Ok(entries) = fs::read_dir(dir_path) {
+                    for entry in entries.take(3) {
+                        if let Ok(entry) = entry {
+                            let path = entry.path();
+                            if path.is_file() {
+                                if let Some(path_str) = path.to_str() {
+                                    discovered_files.push(path_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn new(config: LLMConfig, session_manager: Arc<SessionManager>) -> Result<Self> {
-        let model_resolver = ModelResolver::new();
+        let model_resolver = ModelResolver::with_config(Some(config.clone()));
 
         let openai_client = if let Some(api_key) = &config.openai_api_key {
             let client = OpenAIClient::new(
                 api_key.clone(),
-                config.default_reasoning_model.clone(),
+                config.model_reasoning.clone(),
                 config.openai_base_url.clone(),
             )?;
             Some(Arc::new(client) as Arc<dyn LLMClient>)
@@ -168,12 +319,79 @@ impl PlannerTool {
             branches: HashMap::new(),
             synthesis,
             synthesis_sink: None,
+            file_cache: HashMap::new(),
         })
     }
 
     /// Set synthesis sink for database persistence
     pub fn set_synthesis_sink(&mut self, sink: Arc<dyn SynthesisSink>) {
         self.synthesis_sink = Some(sink);
+    }
+
+    /// Generate mandatory actions that the caller MUST take
+    fn generate_mandatory_actions(
+        &self,
+        request: &PlannerRequest,
+        generated_content: &str,
+    ) -> Vec<String> {
+        let mut actions = Vec::new();
+
+        if request.next_step_required {
+            // MANDATORY: Continue planning
+            actions.push(format!(
+                "⚠️ MANDATORY: You MUST call the planner tool again with step_number: {} to continue planning.",
+                request.step_number + 1
+            ));
+
+            // Specific actions based on step
+            if request.step_number == 1 {
+                actions.push(
+                    "⚠️ MANDATORY: Before calling planner again, you MUST analyze the project structure and identify key files.".to_string()
+                );
+                actions.push(
+                    "⚠️ MANDATORY: Read any README, package.json, or configuration files to understand the project.".to_string()
+                );
+            } else if generated_content.contains("implement") || generated_content.contains("code")
+            {
+                actions.push(
+                    "⚠️ MANDATORY: You MUST examine the relevant code files mentioned or implied in this step.".to_string()
+                );
+                actions.push(
+                    "⚠️ MANDATORY: Identify specific functions, classes, or modules that need modification.".to_string()
+                );
+            }
+
+            if generated_content.contains("test") {
+                actions.push(
+                    "⚠️ MANDATORY: You MUST review existing test files to understand testing patterns.".to_string()
+                );
+            }
+
+            if generated_content.contains("API") || generated_content.contains("endpoint") {
+                actions.push(
+                    "⚠️ MANDATORY: You MUST examine API route definitions and handler implementations.".to_string()
+                );
+            }
+        } else {
+            // Planning complete - mandatory implementation actions
+            actions.push(
+                "⚠️ MANDATORY: You MUST now present the complete plan to the user in a structured format.".to_string()
+            );
+            actions.push(
+                "⚠️ MANDATORY: You MUST ask the user which part of the plan to implement first."
+                    .to_string(),
+            );
+            actions.push(
+                "⚠️ MANDATORY: You MUST be ready to execute specific steps from the plan when requested.".to_string()
+            );
+        }
+
+        // Always require file examination
+        actions.push(
+            "⚠️ MANDATORY: You MUST use file reading tools to examine actual code before making any modifications.".to_string()
+        );
+
+        actions
     }
 
     pub async fn create_plan(&mut self, request: PlannerRequest) -> Result<PlannerResponse> {
@@ -206,12 +424,25 @@ impl PlannerTool {
             anyhow::bail!("total_steps must be at least 1");
         }
 
-        // Get model for planning
-        let model = request
-            .model
-            .as_ref()
-            .map(|m| self.model_resolver.resolve(m))
-            .unwrap_or_else(|| self.config.default_reasoning_model.clone());
+        // Get model for planning - use mini model if requested for cost savings
+        let mut model = if request.use_mini {
+            self.config.model_mini.clone()
+        } else {
+            request
+                .model
+                .as_ref()
+                .map(|m| self.model_resolver.resolve(m))
+                .unwrap_or_else(|| self.config.model_reasoning.clone())
+        };
+
+        // Block GPT-4o family; switch to default reasoning model (usually o3)
+        if self.model_resolver.is_blocked_model(&model) {
+            warn!(
+                "Requested planning model '{}' is blocked. Falling back to '{}'.",
+                model, self.config.model_reasoning
+            );
+            model = self.config.model_reasoning.clone();
+        }
 
         info!(
             "Planner request - Step {}/{}, Model: {}, Temperature: {}, Session: {:?}",
@@ -230,13 +461,39 @@ impl PlannerTool {
             );
         }
 
+        // Read files if provided or auto-discover them (for all steps, not just step 1)
+        let mut files_examined = Vec::new();
+        let file_contents = if let Some(ref file_paths) = request.file_paths {
+            if request.include_file_contents {
+                files_examined = file_paths.clone();
+                self.read_files(file_paths)
+            } else {
+                Vec::new()
+            }
+        } else if request.auto_discover_files {
+            // Auto-discover relevant files based on step content
+            let discovered = self.auto_discover_files(&request.step);
+            if !discovered.is_empty() {
+                info!(
+                    "Auto-discovered {} files for planning context",
+                    discovered.len()
+                );
+                files_examined = discovered.clone();
+                self.read_files(&discovered)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         // Generate planning content using LLM
         let generated_content = if request.step_number == 1 {
             // For first step, just use the provided description as the goal
             request.step.clone()
         } else {
-            // Build context from previous steps
-            let context = self.build_planning_context(&request);
+            // Build context from previous steps and files
+            let context = self.build_planning_context(&request, &file_contents);
 
             // Create prompt for LLM
             let system_prompt = self.build_system_prompt(&request);
@@ -258,12 +515,8 @@ impl PlannerTool {
                 },
             ];
 
-            // Use more tokens for planning steps and add better error handling
-            let max_tokens = if model.starts_with("o3") {
-                32768
-            } else {
-                10000
-            };
+            // Use optimal tokens for each model type - GPT-5 gets MAXIMUM
+            let max_tokens = crate::llm::token_config::TokenConfig::get_reasoning_tokens(&model);
 
             info!(
                 "🚀 Sending planning request to {} (max_tokens: {})",
@@ -274,8 +527,17 @@ impl PlannerTool {
             }
 
             let start_time = std::time::Instant::now();
+
+            // Handle temperature for models that don't support it (GPT-5, O3, O4, etc)
+            let temperature_opt =
+                if crate::llm::token_config::TokenConfig::requires_default_temperature(&model) {
+                    None // Use default temperature
+                } else {
+                    Some(request.temperature)
+                };
+
             let response = client
-                .complete(messages, Some(request.temperature), Some(max_tokens))
+                .complete(messages, temperature_opt, Some(max_tokens))
                 .await
                 .map_err(|e| {
                     let elapsed = start_time.elapsed();
@@ -412,7 +674,17 @@ impl PlannerTool {
         }
 
         // Build response with generated content
-        let mut response = self.build_planning_response(&request, generated_content, &model);
+        let mut response =
+            self.build_planning_response(&request, generated_content.clone(), &model);
+
+        // Add files examined if any
+        if !files_examined.is_empty() {
+            response.files_examined = Some(files_examined);
+        }
+
+        // Add mandatory actions for the caller
+        response.mandatory_actions =
+            Some(self.generate_mandatory_actions(&request, &generated_content));
 
         // Add synthesis snapshot to response
         {
@@ -450,21 +722,60 @@ impl PlannerTool {
             response.planning_complete = Some(true);
             response.plan_summary = Some(self.generate_plan_summary(&request));
             response.next_steps = Some(
-                "Planning complete. Present the complete plan to the user in a well-structured format with clear sections, \
-                numbered steps, visual elements (ASCII charts/diagrams where helpful), sub-step breakdowns, and implementation guidance. \
-                Use headings, bullet points, and visual organization to make the plan easy to follow. \
-                If there are phases, dependencies, or parallel tracks, show these relationships visually. \
-                IMPORTANT: Do NOT use emojis - use clear text formatting and ASCII characters only. \
-                Do NOT mention time estimates or costs unless explicitly requested. \
-                After presenting the plan, offer to either help implement specific parts or use the continuation_id to start related planning sessions.".to_string()
+                "⚠️ CRITICAL - YOU MUST TAKE THESE ACTIONS:\n\
+                1. MANDATORY: Present the complete plan with NUMBERED STEPS and clear structure\n\
+                2. MANDATORY: Include SPECIFIC FILE PATHS and function names for each step\n\
+                3. MANDATORY: Show EXACT COMMANDS to run for testing and validation\n\
+                4. MANDATORY: Provide CODE SNIPPETS or patterns for key implementations\n\
+                5. MANDATORY: Create a CHECKLIST format that can be tracked\n\
+                6. MANDATORY: Ask user 'Which step should I implement first?'\n\
+                7. MANDATORY: Be ready to IMMEDIATELY execute any step when requested\n\n\
+                ⚠️ DO NOT just acknowledge - YOU MUST PRESENT THE ACTIONABLE PLAN NOW!"
+                    .to_string(),
             );
+
+            // Add recommended files for implementation
+            let mut recommended_files = Vec::new();
+            if self.file_cache.len() > 0 {
+                // Recommend examining the files we've already seen
+                for (path, _) in self.file_cache.iter().take(5) {
+                    recommended_files.push(path.clone());
+                }
+            }
+            if !recommended_files.is_empty() {
+                response.recommended_files = Some(recommended_files);
+            }
         }
 
         Ok(response)
     }
 
-    fn build_planning_context(&self, request: &PlannerRequest) -> String {
+    fn build_planning_context(
+        &self,
+        request: &PlannerRequest,
+        file_contents: &[(String, String)],
+    ) -> String {
         let mut context = String::new();
+
+        // Add file context first if available
+        if !file_contents.is_empty() {
+            context.push_str("=== PROJECT FILE CONTEXT ===\n");
+            context.push_str("The following files provide context for this planning task:\n\n");
+
+            for (path, content) in file_contents {
+                context.push_str(&format!("📄 File: {}\n", path));
+                context.push_str("```\n");
+                // Limit each file to first 2000 chars in context
+                if content.len() > 2000 {
+                    context.push_str(&content[..2000]);
+                    context.push_str("\n... [file truncated for context]\n");
+                } else {
+                    context.push_str(content);
+                }
+                context.push_str("\n```\n\n");
+            }
+            context.push_str("=== END FILE CONTEXT ===\n\n");
+        }
 
         // Add previous steps
         context.push_str("Previous planning steps:\n");
@@ -491,9 +802,13 @@ impl PlannerTool {
 
     fn build_system_prompt(&self, request: &PlannerRequest) -> String {
         let base_prompt =
-            "You are an expert planner helping to create a comprehensive, step-by-step plan. \
+            "You are an expert planner creating ACTIONABLE, IMPLEMENTATION-READY plans. \
             Your role is to generate ONE planning step that builds on previous steps. \
-            Be specific, actionable, and maintain coherence with the overall planning trajectory.";
+            Each step MUST be specific, concrete, and directly implementable. \
+            Include specific file names, function names, and technical details. \
+            ALWAYS examine actual project files to ground your planning in reality. \
+            Your plans must be executable by an AI agent, not just high-level guidance. \
+            Include specific commands, code patterns, and exact locations for changes.";
 
         if request.is_branch_point {
             format!("{}\n\nYou are exploring an ALTERNATIVE APPROACH. Think differently from the main path.", base_prompt)
@@ -520,7 +835,12 @@ impl PlannerTool {
             "{}\n\nCurrent step number: {} of {}\n\
             Generate the {} in this planning process.\n\
             User guidance: {}\n\n\
-            Provide a clear, actionable planning step that advances toward the goal.",
+            Provide a CONCRETE, IMPLEMENTABLE planning step with:
+            1. Specific files to examine or modify
+            2. Exact functions or classes to create/update
+            3. Precise technical requirements
+            4. Clear success criteria
+            5. Specific commands or code patterns to use",
             context, request.step_number, request.total_steps, step_type, request.step
         )
     }
@@ -575,6 +895,9 @@ impl PlannerTool {
             planner_required: Some(true),
             model_used: Some(model.to_string()),
             synthesis_snapshot: None, // Will be set after building response
+            mandatory_actions: None,  // Will be set after building response
+            files_examined: None,     // Will be set after building response
+            recommended_files: None,  // Will be set after building response
         }
     }
 

@@ -8,10 +8,15 @@ pub struct LLMConfig {
     pub openai_api_key: Option<String>,
     pub openrouter_api_key: Option<String>,
 
-    // Default models for different roles
-    pub default_chat_model: String,
-    pub default_reasoning_model: String,
-    pub default_bias_checker_model: String,
+    // Simplified model configuration
+    pub model_reasoning: String, // Main reasoning model (e.g., gpt-5)
+    pub model_normal: String,    // Main normal model (e.g., gpt-5)
+    pub model_mini: String,      // Mini model (e.g., gpt-5-mini)
+
+    // Named model definitions (for OpenRouter models)
+    pub model_opus: Option<String>,   // Claude 3 Opus mapping
+    pub model_sonnet: Option<String>, // Claude Sonnet mapping
+    pub model_grok: Option<String>,   // Grok mapping
 
     // API endpoints (optional overrides)
     pub openai_base_url: Option<String>,
@@ -34,13 +39,27 @@ impl LLMConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
 
-            // Default models
-            default_chat_model: env::var("LUX_DEFAULT_CHAT_MODEL")
-                .unwrap_or_else(|_| "gpt-4-turbo-preview".to_string()),
-            default_reasoning_model: env::var("LUX_DEFAULT_REASONING_MODEL")
-                .unwrap_or_else(|_| "o3-pro".to_string()),
-            default_bias_checker_model: env::var("LUX_DEFAULT_BIAS_CHECKER_MODEL")
-                .unwrap_or_else(|_| "o4-mini".to_string()),
+            // Model configuration with backward compatibility
+            model_reasoning: env::var("LUX_MODEL_REASONING")
+                .or_else(|_| env::var("LUX_DEFAULT_REASONING_MODEL")) // Backward compat
+                .unwrap_or_else(|_| "gpt-5".to_string()),
+            model_normal: env::var("LUX_MODEL_NORMAL")
+                .or_else(|_| env::var("LUX_DEFAULT_CHAT_MODEL")) // Backward compat
+                .unwrap_or_else(|_| "gpt-5".to_string()),
+            model_mini: env::var("LUX_MODEL_MINI")
+                .or_else(|_| env::var("LUX_DEFAULT_BIAS_CHECKER_MODEL")) // Backward compat
+                .unwrap_or_else(|_| "gpt-5-mini".to_string()),
+
+            // Named model definitions with defaults
+            model_opus: env::var("LUX_MODEL_OPUS")
+                .ok()
+                .or_else(|| Some("anthropic/claude-4.1-opus".to_string())),
+            model_sonnet: env::var("LUX_MODEL_SONNET")
+                .ok()
+                .or_else(|| Some("anthropic/claude-4-sonnet".to_string())),
+            model_grok: env::var("LUX_MODEL_GROK")
+                .ok()
+                .or_else(|| Some("x-ai/grok-beta".to_string())),
 
             // API endpoints
             openai_base_url: env::var("OPENAI_BASE_URL").ok(),
@@ -75,9 +94,12 @@ impl Default for LLMConfig {
         Self {
             openai_api_key: None,
             openrouter_api_key: None,
-            default_chat_model: "gpt4.1".to_string(),
-            default_reasoning_model: "o3-pro".to_string(),
-            default_bias_checker_model: "o4-mini".to_string(),
+            model_reasoning: "gpt-5".to_string(),
+            model_normal: "gpt-5".to_string(),
+            model_mini: "gpt-5-mini".to_string(),
+            model_opus: Some("anthropic/claude-4.1-opus".to_string()),
+            model_sonnet: Some("anthropic/claude-4-sonnet".to_string()),
+            model_grok: Some("x-ai/grok-beta".to_string()),
             openai_base_url: None,
             openrouter_base_url: Some("https://openrouter.ai/api/v1".to_string()),
             request_timeout_secs: 30,
