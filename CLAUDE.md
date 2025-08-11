@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Allowed Directories
-- /tmp
-- /Users/alan/Projects/_MCP/nirvana/lux-mcp
+## Working Directory
+- The project root directory where Lux MCP is installed
+- /tmp for temporary operations
 
 ## Important Notes
 
@@ -226,12 +226,12 @@ Lux MCP now fully supports OpenAI's reasoning models with automatic API detectio
 - **Models**: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo-preview`, etc.
 - **Parameter**: `max_tokens`
 
-### Recommended Claude Code Configuration
+### Recommended Claude Desktop Configuration
 
 ```json
 {
   "lux": {
-    "command": "/Users/alan/Projects/_MCP/nirvana/lux-mcp/target/release/lux-mcp",
+    "command": "/path/to/lux-mcp/target/release/lux-mcp",
     "env": {
       "OPENAI_API_KEY": "your-openai-key",
       "OPENROUTER_API_KEY": "your-openrouter-key",
@@ -253,7 +253,7 @@ GPT-5 now uses the **Responses API** with:
 - **Maximum Reasoning**: `reasoning.effort: "high"` for all calls
 - **High Verbosity**: `text.verbosity: "high"` for detailed responses
 - **128K Token Support**: Full 128,000 completion tokens available
-- **Temperature**: Not supported (similar to O3/O4 models)
+- **Temperature Control**: Full temperature support unlike O3/O4 models
 
 ### Interactive Planner Tool (Enhanced with File Reading)
 

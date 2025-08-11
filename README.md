@@ -6,9 +6,21 @@
 
 Lux MCP is a Model Context Protocol server that "illuminates" AI reasoning by providing metacognitive monitoring, conversation threading, and quality tracking for LLM interactions.
 
-## 🌟 Key Features
+## 🎯 Revolutionary Direct File Access
 
-- **📁 Direct File Access** - Tools can read files directly when paths are provided
+### 📁 **Third-Party LLMs Read Files Directly - Bypassing the Orchestrator**
+Unlike traditional MCP servers where the host (Claude/ChatGPT) must read files and pass contents, **Lux MCP enables third-party LLMs to read files directly on the server side**. This means:
+
+- ✅ **Token Savings**: The orchestrator doesn't waste tokens on file contents
+- ✅ **Privacy**: File contents never pass through the main model
+- ✅ **Speed**: Direct server-side reading is faster
+- ✅ **Scale**: Can process large files without context limits
+- ✅ **Security**: Files stay within your MCP server boundary
+
+Example: When you provide `file_paths: ["./src/main.rs"]`, the external LLM (GPT-5, O3, etc.) reads the file directly on the server, NOT through Claude/ChatGPT!
+
+## 🌟 Other Key Features
+
 - **🧠 Metacognitive Monitoring** - Detects and prevents circular reasoning, distractor fixation, and quality degradation
 - **🧵 Conversation Threading** - Maintains context across tool calls with session management
 - **🔍 Bias Detection** - Dual-model reasoning with step-by-step bias analysis

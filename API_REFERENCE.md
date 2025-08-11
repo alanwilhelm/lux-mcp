@@ -2,16 +2,17 @@
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [MCP Tools](#mcp-tools)
+2. [Revolutionary Direct File Access](#revolutionary-direct-file-access)
+3. [MCP Tools](#mcp-tools)
    - [confer](#confer)
    - [traced_reasoning](#traced_reasoning)
    - [biased_reasoning](#biased_reasoning)
    - [planner](#planner)
    - [illumination_status](#illumination_status)
-3. [Threading System](#threading-system)
-4. [Monitoring System](#monitoring-system)
-5. [Database Integration](#database-integration)
-6. [Configuration](#configuration)
+4. [Threading System](#threading-system)
+5. [Monitoring System](#monitoring-system)
+6. [Database Integration](#database-integration)
+7. [Configuration](#configuration)
 
 ---
 
@@ -20,6 +21,7 @@
 Lux MCP is a Model Context Protocol server that provides metacognitive monitoring for AI reasoning. It exposes tools via MCP for conversational AI, step-by-step reasoning, bias detection, and planning.
 
 ### Key Features
+- **📁 Direct File Access**: Third-party LLMs read files directly, bypassing the orchestrator
 - **Metacognitive Monitoring**: Detects circular reasoning, distractor fixation, and quality degradation
 - **Conversation Threading**: Maintains context across tool calls with `continuation_id`
 - **Synthesis Integration**: Tracks insights and actions across reasoning sessions
@@ -28,10 +30,42 @@ Lux MCP is a Model Context Protocol server that provides metacognitive monitorin
 
 ---
 
+## Revolutionary Direct File Access
+
+### How It Works
+**Lux MCP enables third-party LLMs (GPT-5, O3, Claude via OpenRouter, etc.) to read files directly on the server side**, completely bypassing the main orchestrator model (Claude Desktop, ChatGPT, etc.).
+
+### Traditional MCP Flow (Inefficient)
+```
+1. User asks Claude to analyze code
+2. Claude uses Read tool to fetch file contents
+3. File contents consume Claude's context window
+4. Claude passes everything to MCP tool
+5. MCP forwards to external LLM with duplicated content
+```
+
+### Lux MCP Flow (Efficient)
+```
+1. User asks Claude to analyze code
+2. Claude passes ONLY file paths to Lux MCP
+3. Lux MCP reads files directly on server
+4. External LLM processes files without consuming Claude's tokens
+5. Results returned to Claude for final synthesis
+```
+
+### Benefits
+- **🚀 Token Efficiency**: Save 50-90% of orchestrator tokens
+- **🔒 Privacy**: Sensitive files never enter Claude/ChatGPT's context
+- **⚡ Performance**: No serialization/deserialization overhead
+- **📈 Scale**: Process massive codebases beyond context limits
+- **🛡️ Security**: Files remain within your controlled server environment
+
+---
+
 ## MCP Tools
 
 ### `confer`
-Simple conversational AI with model selection and threading support.
+Simple conversational AI with model selection, threading support, and **direct file reading**.
 
 #### Request Parameters
 ```json
@@ -39,10 +73,21 @@ Simple conversational AI with model selection and threading support.
   "message": "string",           // Required: The message to send
   "model": "string",             // Optional: Model to use (default: LUX_MODEL_NORMAL)
   "temperature": "number",       // Optional: Temperature 0.0-1.0 (default: 0.7)
-  "max_tokens": "integer",       // Optional: Max tokens for response (default: 10000)
-  "continuation_id": "string"    // Optional: Thread ID for conversation continuity
+  "continuation_id": "string",   // Optional: Thread ID for conversation continuity
+  "file_paths": ["string"],      // Optional: Files for the LLM to read directly (server-side)
+  "include_file_contents": bool  // Optional: Whether to read files (default: true)
 }
 ```
+
+#### Direct File Access Example
+```json
+{
+  "message": "Review this code for security issues",
+  "file_paths": ["/app/auth.js", "/app/config.js"],
+  "model": "gpt-5"
+}
+```
+**Note**: The external LLM (GPT-5) reads these files directly on the server. The orchestrator (Claude) never sees the file contents!
 
 #### Response
 ```json
