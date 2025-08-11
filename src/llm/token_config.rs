@@ -53,15 +53,14 @@ impl TokenConfig {
         tokens
     }
 
-    /// Returns true if this model only supports default temperature (e.g., O4, GPT-5, GPT-5-mini)
+    /// Returns true if this model only supports default temperature (e.g., O4, GPT-5)
     pub fn requires_default_temperature(model: &str) -> bool {
         // O4 models only support default temperature
         if model.starts_with("o4") {
             return true;
         }
-        // GPT-5 models only support default temperature
-        let m = model.to_lowercase();
-        if m == "gpt-5" || m.starts_with("gpt-5-") || m.contains("gpt5") {
+        // All GPT-5 models use Responses API (no temperature support)
+        if model == "gpt-5" || model.starts_with("gpt-5-") || model.contains("gpt5") {
             return true;
         }
         false

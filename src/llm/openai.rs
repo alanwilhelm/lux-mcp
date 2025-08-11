@@ -161,16 +161,14 @@ impl OpenAIClient {
     }
 
     fn is_gpt5_model(model: &str) -> bool {
-        // GPT-5 models - available now!
-        model == "gpt-5" || model.starts_with("gpt-5-")
+        // GPT-5 models - available now via Responses API!
+        model == "gpt-5" || model.starts_with("gpt-5-") || model == "gpt5-mini"
     }
 
     fn requires_default_temperature(model: &str) -> bool {
         // These models only support default temperature (1.0)
-        Self::is_o4_model(model)
-            || model == "gpt-5-mini"
-            || model == "gpt5-mini"
-            || (model.starts_with("gpt-5") && model.contains("mini"))
+        Self::is_o4_model(model) 
+            || Self::is_gpt5_model(model)  // All GPT-5 models use Responses API (no temperature)
     }
 
     pub fn get_optimal_tokens(model: &str) -> u32 {
