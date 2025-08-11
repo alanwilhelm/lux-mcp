@@ -6,6 +6,14 @@
 
 Lux MCP is a Model Context Protocol server that "illuminates" AI reasoning by providing metacognitive monitoring, conversation threading, and quality tracking for LLM interactions.
 
+## ⚠️ CRITICAL MODEL POLICY
+
+**ONLY TWO MODELS USE OPENAI:**
+- `gpt-5` (128K tokens via Responses API) 
+- `gpt-5-mini` (16K tokens via Responses API)
+
+**ALL OTHER MODELS USE OPENROUTER** - No exceptions! Any attempt to use other models with OpenAI (gpt-4o, o3, o4, etc.) will be rejected.
+
 ## 🎯 Revolutionary Direct File Access
 
 ### 📁 **Third-Party LLMs Read Files Directly - Bypassing the Orchestrator**
@@ -33,7 +41,8 @@ Example: When you provide `file_paths: ["./src/main.rs"]`, the external LLM (GPT
 
 ### Prerequisites
 - Rust 1.70+ 
-- OpenAI API key and/or OpenRouter API key
+- OpenAI API key (ONLY for gpt-5 and gpt-5-mini)
+- OpenRouter API key (for ALL other models)
 - PostgreSQL (optional, for persistence)
 
 ### Build from Source

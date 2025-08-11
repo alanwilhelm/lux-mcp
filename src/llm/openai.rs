@@ -161,8 +161,13 @@ impl OpenAIClient {
     }
 
     fn is_gpt5_model(model: &str) -> bool {
-        // GPT-5 models - available now via Responses API!
-        model == "gpt-5" || model.starts_with("gpt-5-") || model == "gpt5-mini"
+        // GPT-5 models - ALL use Responses API for maximum intelligence!
+        model == "gpt-5" 
+            || model == "gpt-5-mini" 
+            || model == "gpt-5-nano"
+            || model == "gpt5-mini"
+            || model == "gpt5-nano"
+            || model.starts_with("gpt-5-")
     }
 
     fn requires_default_temperature(model: &str) -> bool {

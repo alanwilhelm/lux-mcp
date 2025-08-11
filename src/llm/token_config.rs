@@ -5,20 +5,17 @@ pub struct TokenConfig;
 
 impl TokenConfig {
     /// Get the optimal token count for any model
-    /// Mini models get limited tokens regardless of base model
+    /// GPT-5 family models ALL get 128K tokens!
     pub fn get_optimal_tokens(model: &str) -> u32 {
-        let tokens = if model.contains("mini") || model.ends_with("-mini") {
-            16000 // ALL mini models: Respect their 16K limit (including gpt-5-mini if it exists)
-        } else if model == "gpt-5" || model.starts_with("gpt-5-") {
-            128000 // GPT-5 full models: MAXIMUM INTELLIGENCE (128K completion tokens)
-        } else if model.starts_with("o3") {
-            100000 // O3: MAXIMUM REASONING DEPTH
-        } else if model.starts_with("o4") {
-            50000 // O4: MAXIMUM FAST REASONING
-        } else if model.starts_with("gpt-4o") || model == "gpt-4o" {
-            16384 // GPT-4o models: Respect their 16K token limit
-        } else {
-            16384 // Standard models: Safe default (was 20000, but many models don't support that)
+        let tokens = match model {
+            // GPT-5 FAMILY - ALL GET 128K TOKENS!
+            "gpt-5" => 128000,      // Maximum intelligence
+            "gpt-5-mini" | "gpt5-mini" => 128000,  // Also 128K!
+            "gpt-5-nano" | "gpt5-nano" => 128000,  // Also 128K per official docs!
+            // Legacy models (will be removed)
+            _ if model.starts_with("o3") => 100000,
+            _ if model.starts_with("o4") => 50000,
+            _ => 16384, // Safe default
         };
 
         info!(
@@ -31,18 +28,15 @@ impl TokenConfig {
 
     /// Get tokens for reasoning tasks
     pub fn get_reasoning_tokens(model: &str) -> u32 {
-        let tokens = if model.contains("mini") || model.ends_with("-mini") {
-            16000 // ALL mini models: Respect their 16K limit (including gpt-5-mini if it exists)
-        } else if model == "gpt-5" || model.starts_with("gpt-5-") {
-            128000 // GPT-5 full models: Maximum supported (128K completion tokens)
-        } else if model.starts_with("o3") {
-            100000 // O3: Maximum reasoning
-        } else if model.starts_with("o4") {
-            50000 // O4: Fast reasoning
-        } else if model.starts_with("gpt-4o") || model == "gpt-4o" {
-            16384 // GPT-4o models: Respect their 16K token limit
-        } else {
-            16384 // Standard models: Safe default
+        let tokens = match model {
+            // GPT-5 FAMILY - ALL GET 128K FOR MAXIMUM REASONING!
+            "gpt-5" => 128000,      // Maximum reasoning depth
+            "gpt-5-mini" | "gpt5-mini" => 128000,  // Full reasoning power
+            "gpt-5-nano" | "gpt5-nano" => 128000,  // Full reasoning power
+            // Legacy models (will be removed)
+            _ if model.starts_with("o3") => 100000,
+            _ if model.starts_with("o4") => 50000,
+            _ => 16384, // Safe default
         };
 
         info!(
@@ -59,10 +53,10 @@ impl TokenConfig {
         if model.starts_with("o4") {
             return true;
         }
-        // All GPT-5 models use Responses API (no temperature support)
-        if model == "gpt-5" || model.starts_with("gpt-5-") || model.contains("gpt5") {
-            return true;
-        }
-        false
+        // ALL GPT-5 FAMILY models use Responses API (no temperature support)
+        matches!(model, 
+            "gpt-5" | "gpt-5-mini" | "gpt-5-nano" | 
+            "gpt5-mini" | "gpt5-nano"
+        ) || model.starts_with("gpt-5-")
     }
 }

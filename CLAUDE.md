@@ -201,6 +201,17 @@ mod tests {
 
 ## ⚠️ CRITICAL: Model Configuration for Claude Code
 
+### 🔴 STRICT MODEL POLICY - DO NOT VIOLATE 🔴
+
+**ONLY TWO MODELS CAN USE OPENAI:**
+1. `gpt-5` - Uses OpenAI Responses API with 128K tokens
+2. `gpt-5-mini` - Uses OpenAI Responses API with 16K tokens
+
+**ALL OTHER MODELS MUST USE OPENROUTER - NO EXCEPTIONS**
+
+Any attempt to use other models with OpenAI (like gpt-4o, o3, o4) will be REJECTED with an error.
+This is a HARD requirement. The code enforces this strictly in `model_aliases.rs`.
+
 ### OpenAI Reasoning Models (o3/o4) Support ✅
 
 Lux MCP now fully supports OpenAI's reasoning models with automatic API detection:

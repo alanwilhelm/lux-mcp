@@ -299,20 +299,58 @@ impl ModelResolver {
         model.to_string()
     }
 
-    pub fn is_openrouter_model(&self, model: &str) -> bool {
-        let resolved = self.resolve(model);
-        resolved.contains('/')
-    }
-
-    /// Returns true if the model is allowed by strict policy (GPT-5 family only: gpt-5, gpt-5-mini)
-    pub fn is_allowed_model(&self, model: &str) -> bool {
+    /// STRICT MODEL ALLOWLIST - ONLY 3 MODELS SUPPORTED
+    /// Returns the allowed model or None if not allowed
+    pub fn get_allowed_model(&self, model: &str) -> Option<String> {
         let resolved = self.resolve(model).to_lowercase();
-        resolved == "gpt-5" || resolved == "gpt-5-mini"
+        
+        // ONLY THESE MODELS ARE ALLOWED - NO EXCEPTIONS
+        match resolved.as_str() {
+            "gpt-5" => Some("gpt-5".to_string()),
+            "gpt-5-mini" | "gpt5-mini" => Some("gpt-5-mini".to_string()),
+            "gpt-5-nano" | "gpt5-nano" => Some("gpt-5-nano".to_string()),
+            _ => None // NOT ALLOWED
+        }
+    }
+    
+    /// Get fallback model for unsupported requests
+    pub fn get_fallback_model(&self, requested: &str) -> (String, String) {
+        let resolved = self.resolve(requested).to_lowercase();
+        
+        // Smart fallback based on requested model characteristics
+        if resolved.contains("nano") || resolved.contains("fast") || resolved.contains("quick") {
+            (
+                "gpt-5-nano".to_string(),
+                format!("⚠️ Model '{}' is not supported. Using gpt-5-nano (fastest) instead.", requested)
+            )
+        } else if resolved.contains("mini") || resolved.contains("small") {
+            (
+                "gpt-5-mini".to_string(),
+                format!("⚠️ Model '{}' is not supported. Using gpt-5-mini instead.", requested)
+            )
+        } else {
+            // Default to gpt-5 for everything else
+            (
+                "gpt-5".to_string(),
+                format!("⚠️ Model '{}' is not supported. Using gpt-5 (most capable) instead.", requested)
+            )
+        }
+    }
+    
+    pub fn is_openrouter_model(&self, _model: &str) -> bool {
+        // NO OPENROUTER MODELS SUPPORTED YET
+        // This will be updated when we add OpenRouter support
+        false
     }
 
-    /// Returns true if a model is blocked by policy (anything not strictly allowed)
+    /// Returns true if the model is strictly allowed (ONLY gpt-5 and gpt-5-mini)
+    pub fn is_allowed_model(&self, model: &str) -> bool {
+        self.get_allowed_model(model).is_some()
+    }
+
+    /// Returns true if a model is blocked (anything not in our strict allowlist)
     pub fn is_blocked_model(&self, model: &str) -> bool {
-        !self.is_allowed_model(model)
+        self.get_allowed_model(model).is_none()
     }
 
     pub fn suggest_similar(&self, input: &str) -> Vec<String> {

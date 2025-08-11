@@ -260,67 +260,56 @@ impl ChatTool {
             self.config.openrouter_api_key.is_some()
         );
 
-        // Block GPT-4o family explicitly
-        if self.model_resolver.is_blocked_model(&model) {
-            anyhow::bail!("model_not_found: '{}' is blocked by policy", model);
-        }
-
-        // Determine which client to use
-        let client: Arc<dyn LLMClient> = if self.model_resolver.is_openrouter_model(&model) {
-            // OpenRouter model
-            info!("Using OpenRouter for model: {}", model);
-            if self.config.openrouter_api_key.is_none() {
-                error!("OpenRouter API key not configured");
-                anyhow::bail!("OpenRouter API key not configured. Please set OPENROUTER_API_KEY");
-            }
-
-            // Check if we have a pre-created client
-            if let Some((_, client)) = self.openrouter_clients.iter().find(|(m, _)| m == &model) {
-                client.clone()
-            } else {
-                // Create a new client for this model
-                let api_key = self
-                    .config
-                    .openrouter_api_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not available"))?;
-                let new_client = OpenRouterClient::new(
-                    api_key.clone(),
-                    model.clone(),
-                    self.config.openrouter_base_url.clone(),
-                )?;
-                Arc::new(new_client) as Arc<dyn LLMClient>
-            }
+        // STRICT MODEL POLICY ENFORCEMENT
+        // ONLY gpt-5 and gpt-5-mini are supported
+        let resolved_model = self.model_resolver.resolve(&model).to_lowercase();
+        
+        // Log the policy check for debugging
+        info!("🔒 MODEL POLICY CHECK: Requested '{}' -> Resolved '{}'", model, resolved_model);
+        
+        // Check if this is a supported model (ONLY 3 ALLOWED)
+        let is_supported = matches!(resolved_model.as_str(), 
+            "gpt-5" | "gpt-5-mini" | "gpt-5-nano" | "gpt5-mini" | "gpt5-nano"
+        );
+        
+        // If not supported, use fallback with warning
+        let (actual_model, actual_request) = if !is_supported {
+            warn!("⚠️ Model '{}' is not supported. Using gpt-5 instead.", model);
+            
+            // Add a note to the response about the model substitution
+            let mut modified_request = request.clone();
+            modified_request.message = format!(
+                "[System Note: Model '{}' is not supported. Using gpt-5 instead.]\n\n{}",
+                model, request.message
+            );
+            ("gpt-5".to_string(), modified_request)
         } else {
-            // OpenAI model
-            info!("Using OpenAI for model: {}", model);
-            if let Some(_client) = &self.openai_client {
-                // Create a new client with the specific model
-                if let Some(api_key) = &self.config.openai_api_key {
-                    debug!("Creating OpenAI client for model: {}", model);
-                    let new_client = OpenAIClient::new(
-                        api_key.clone(),
-                        model.clone(),
-                        self.config.openai_base_url.clone(),
-                    )?;
-                    Arc::new(new_client) as Arc<dyn LLMClient>
-                } else {
-                    error!("OpenAI API key not configured");
-                    anyhow::bail!("OpenAI API key not configured. Please set OPENAI_API_KEY");
-                }
-            } else {
-                error!("OpenAI client not initialized - API key missing");
-                anyhow::bail!("OpenAI API key not configured. Please set OPENAI_API_KEY");
-            }
+            (resolved_model.clone(), request.clone())
+        };
+
+        // Always use OpenAI since we only support gpt-5 and gpt-5-mini
+        info!("Using OpenAI for model: {}", actual_model);
+        
+        let client: Arc<dyn LLMClient> = if let Some(api_key) = &self.config.openai_api_key {
+            debug!("Creating OpenAI client for model: {}", actual_model);
+            let new_client = OpenAIClient::new(
+                api_key.clone(),
+                actual_model.clone(),
+                self.config.openai_base_url.clone(),
+            )?;
+            Arc::new(new_client) as Arc<dyn LLMClient>
+        } else {
+            error!("OpenAI API key not configured");
+            anyhow::bail!("OpenAI API key not configured. Please set OPENAI_API_KEY");
         };
 
         // Build message with optional file contents
         let mut full_message = String::new();
 
         // Add file contents if provided
-        if let Some(ref file_paths) = request.file_paths {
+        if let Some(ref file_paths) = actual_request.file_paths {
             info!("File paths provided: {:?}", file_paths);
-            if request.include_file_contents && !file_paths.is_empty() {
+            if actual_request.include_file_contents && !file_paths.is_empty() {
                 info!("Attempting to read {} files", file_paths.len());
                 let file_contents = self.read_files(file_paths);
                 info!("Successfully read {} files", file_contents.len());
@@ -337,7 +326,7 @@ impl ChatTool {
         }
 
         // Add the actual message
-        full_message.push_str(&request.message);
+        full_message.push_str(&actual_request.message);
 
         // Create messages
         let messages = vec![ChatMessage {
